@@ -1,7 +1,6 @@
-import aiohttp
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
-import asyncio
 
 BOT_TOKEN = "8765184537:AAGPCaYDSRTmh7Pd45_hLhrI6xgHNV5aLig"
 OWNER = "@RTFGAMMING"
@@ -17,6 +16,7 @@ CHANNELS = [
 
 user_state = {}
 
+# ===== CHANNEL BUTTONS =====
 async def join_buttons(update: Update):
     bot = update.get_bot()
     user_id = update.effective_user.id
@@ -34,6 +34,7 @@ async def join_buttons(update: Update):
     else:
         return None
 
+# ===== CHECK CHANNEL JOIN =====
 async def check_join(update: Update):
     try:
         user_id = update.effective_user.id
@@ -46,6 +47,7 @@ async def check_join(update: Update):
     except:
         return False
 
+# ===== START COMMAND =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_join(update):
         buttons = await join_buttons(update)
@@ -63,6 +65,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await show_main_buttons(update)
 
+# ===== SHOW 2 BUTTONS =====
 async def show_main_buttons(update: Update):
     buttons = [
         [InlineKeyboardButton("📞 Number to Info", callback_data="number")],
@@ -70,6 +73,7 @@ async def show_main_buttons(update: Update):
     ]
     await update.message.reply_text("✅ ACCESS GRANTED\n\nSelect option:", reply_markup=InlineKeyboardMarkup(buttons))
 
+# ===== VERIFY =====
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -83,6 +87,7 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.answer("❌ Join first", show_alert=True)
 
+# ===== BUTTON CALLBACK =====
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -95,6 +100,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = "tg"
         await query.message.reply_text("📥 Send me the TG username @ mt lagana/userid to fetch info:")
 
+# ===== NUMBER DATA =====
 def extract_records(data):
     records = []
     if "result" in data and "data" in data["result"]:
@@ -136,6 +142,7 @@ def format_result(records, number):
 ⚡ Status: ACTIVE"""
     return text
 
+# ===== MESSAGE HANDLER =====
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_state or user_state[user_id] is None:
@@ -148,18 +155,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_tg(update, text)
     user_state[user_id] = None
 
+# ===== HANDLE NUMBER =====
 async def handle_number(update: Update, number):
     user_msg = await update.message.reply_text(f"📥 Searching number: {number}...")
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(NUM_API_URL.format(number=number), timeout=15) as res:
-                data = await res.json()
+        res = requests.get(NUM_API_URL.format(number=number), timeout=15)
+        data = res.json()
         records = extract_records(data)
         if not records:
             bot_msg = await update.message.reply_text(f"❌ No Data Found for {number}")
-            await asyncio.sleep(20)
-            await user_msg.delete()
-            await bot_msg.delete()
             return
         result = format_result(records, number)
         await update.message.reply_text(result)
@@ -167,12 +171,12 @@ async def handle_number(update: Update, number):
         print("ERROR:", e)
         await update.message.reply_text("❌ API Error / Timeout")
 
+# ===== HANDLE TG =====
 async def handle_tg(update: Update, term):
     user_msg = await update.message.reply_text(f"📥 Searching TG user: {term}...")
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(TG_API_URL.format(term=term), timeout=15) as res:
-                data = await res.json()
+        res = requests.get(TG_API_URL.format(term=term), timeout=15)
+        data = res.json()
         if "result" in data and data["result"].get("success"):
             result = data["result"]
             country_code = result.get("country_code", "N/A")
@@ -190,6 +194,7 @@ async def handle_tg(update: Update, term):
         print("ERROR:", e)
         await update.message.reply_text("❌ API Error / Timeout")
 
+# ===== COMMANDS =====
 async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Use: /num 9999999999")
@@ -202,6 +207,7 @@ async def tg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await handle_tg(update, context.args[0])
 
+# ===== MAIN =====
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(verify, pattern="verify"))
