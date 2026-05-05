@@ -1,8 +1,10 @@
+import os
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
-BOT_TOKEN = "8765184537:AAGPCaYDSRTmh7Pd45_hLhrI6xgHNV5aLig"
+# ✅ BOT TOKEN environment variable se
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER = "@RTFGAMMING"
 
 NUM_API_URL = "https://paid.proportalx.workers.dev/number?key=Rexultron&num={number}"
