@@ -914,6 +914,45 @@ app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
 
 app.get("/", (_req, res) => res.send("RTF Bot is running ✅"));
 
+// ── POLLING MODE (jab WEBHOOK_URL na ho) ─────
+let pollingOffset = 0;
+let pollingActive = false;
+
+async function pollOnce() {
+  try {
+    const res = await fetch(`${TG_BASE}/getUpdates?offset=${pollingOffset}&timeout=25&limit=50`, {
+      signal: AbortSignal.timeout(30000),
+    });
+    const json = await res.json();
+    if (!json.ok || !json.result.length) return;
+    for (const update of json.result) {
+      pollingOffset = update.update_id + 1;
+      handleUpdate(update).catch(e => console.error("[POLL UPDATE]", e.message));
+      // route commands separately
+      const msg = update.message || update.edited_message;
+      if (msg && (msg.text || "").startsWith("/")) {
+        handleCommand(msg).catch(e => console.error("[POLL CMD]", e.message));
+      }
+    }
+  } catch (e) {
+    if (!e.message.includes("abort")) console.error("[POLL]", e.message);
+  }
+}
+
+async function startPolling() {
+  // Delete any existing webhook first
+  await tgApi("deleteWebhook", { drop_pending_updates: true });
+  pollingActive = true;
+  console.log("[BOT] Polling mode active ✅");
+  const loop = async () => {
+    while (pollingActive) {
+      await pollOnce();
+      await new Promise(r => setTimeout(r, 300));
+    }
+  };
+  loop();
+}
+
 // ── STARTUP ───────────────────────────────────
 async function start() {
   if (!BOT_TOKEN) { console.error("[BOT] BOT_TOKEN not set! Exiting."); process.exit(1); }
@@ -930,16 +969,19 @@ async function start() {
     { command: "help",    description: "❓ Help Guide" },
   ]);
 
-  // Set webhook
   if (WEBHOOK_URL) {
+    // ── WEBHOOK MODE ──
     const wh = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
     await setWebhook(wh);
-    console.log(`[BOT] Webhook set → ${wh}`);
+    console.log(`[BOT] Webhook mode → ${wh}`);
+    app.listen(PORT, () => console.log(`[BOT] Server on port ${PORT} ✅`));
   } else {
-    console.warn("[BOT] WEBHOOK_URL not set — webhook NOT registered. Set it in Render env vars.");
+    // ── POLLING MODE (WEBHOOK_URL set nahi) ──
+    console.log("[BOT] WEBHOOK_URL not set — starting polling mode...");
+    // Still need Express for Render health check (keeps service alive)
+    app.listen(PORT, () => console.log(`[BOT] Health server on port ${PORT} ✅`));
+    await startPolling();
   }
-
-  app.listen(PORT, () => console.log(`[BOT] Server listening on port ${PORT} ✅`));
 }
 
 start();
