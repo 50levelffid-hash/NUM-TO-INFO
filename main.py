@@ -3,27 +3,31 @@ import logging
 import asyncio
 import os
 import json
+import io
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes,
+    CallbackQueryHandler, MessageHandler, filters
+)
 from motor.motor_asyncio import AsyncIOMotorClient
 
+# ══════════════════════════════════════════
+#  LOGGING
+# ══════════════════════════════════════════
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]   # Render me file log nahi, stdout use karo
 )
 logger = logging.getLogger("RTFBot")
 
 # ══════════════════════════════════════════
-#  CONFIG — .env se load hoga
+#  CONFIG — Render environment variables
 # ══════════════════════════════════════════
-BOT_TOKEN  = os.environ.get("BOT_TOKEN",  "")
-MONGO_URI  = os.environ.get("MONGO_URI",  "")
-OWNER      = "@RTFGAMMING"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+MONGO_URI = os.environ.get("MONGO_URI", "")
+OWNER     = "@RTFGAMMING"
 
 NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123"
 SECOND_API_URL  = "https://surya.suryahacker.workers.dev/?query={number}"
@@ -37,23 +41,23 @@ VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m
 CHANNELS = [
     ("🔥 RTF GAMING",  "RTFGMINGGC"),
     ("🎁 GIVEAWAY",    "RTFGAMINGHACK0"),
-    ("💀 RTF ERA",     "BYEPAASLINK")
+    ("💀 RTF ERA",     "BYEPAASLINK"),
 ]
 
-user_state     = {}
+# ── In-memory state (multi-user safe — dict per user_id) ──────
+user_state     = {}   # {user_id: "number"/"tg"/...}
 admins         = ["@rtfgamming"]
 custom_tg_data = {}
 
 JOINED_STATUSES = {"member", "administrator", "creator"}
 
 # ══════════════════════════════════════════
-#  MONGODB SETUP
+#  MONGODB
 # ══════════════════════════════════════════
-
 mongo_client = None
 db           = None
-users_col    = None   # users collection
-data_col     = None   # admin saved data collection
+users_col    = None
+data_col     = None
 
 async def init_db():
     global mongo_client, db, users_col, data_col
@@ -61,49 +65,48 @@ async def init_db():
         logger.warning("[DB] MONGO_URI not set — DB disabled")
         return
     try:
-        mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        mongo_client = AsyncIOMotorClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=8000,
+            connectTimeoutMS=8000,
+            socketTimeoutMS=8000,
+            maxPoolSize=50,          # ← concurrent users support
+            minPoolSize=5,
+        )
         await mongo_client.admin.command("ping")
         db        = mongo_client["rtfbot"]
         users_col = db["users"]
         data_col  = db["saved_data"]
-        # Index banao taaki fast query ho
         await users_col.create_index("user_id", unique=True)
         await data_col.create_index("key")
         logger.info("[DB] MongoDB connected ✅")
     except Exception as e:
-        logger.error(f"[DB ERROR] MongoDB connect failed: {e}")
+        logger.error(f"[DB ERROR] {e}")
         mongo_client = None
 
 async def db_save_user(user):
-    """User info MongoDB mein save/update karo"""
     if not users_col:
         return
     try:
-        uid      = user.id
-        username = user.username or ""
-        name     = (user.full_name or "").strip()
-        fname    = (user.first_name or "").strip()
-        lname    = (user.last_name  or "").strip()
+        uid = user.id
         await users_col.update_one(
             {"user_id": uid},
             {"$set": {
                 "user_id":    uid,
-                "username":   username,
-                "name":       name,
-                "first_name": fname,
-                "last_name":  lname,
+                "username":   user.username or "",
+                "name":       (user.full_name or "").strip(),
+                "first_name": (user.first_name or "").strip(),
+                "last_name":  (user.last_name  or "").strip(),
                 "last_seen":  datetime.utcnow().isoformat(),
             }, "$setOnInsert": {
                 "first_seen": datetime.utcnow().isoformat(),
             }},
             upsert=True
         )
-        logger.debug(f"[DB] User saved uid={uid} @{username}")
     except Exception as e:
-        logger.error(f"[DB SAVE USER ERROR] {e}")
+        logger.error(f"[DB SAVE USER] {e}")
 
 async def db_save_data(key: str, value: dict):
-    """Admin ka important data save karo"""
     if not data_col:
         return
     try:
@@ -113,17 +116,15 @@ async def db_save_data(key: str, value: dict):
             upsert=True
         )
     except Exception as e:
-        logger.error(f"[DB SAVE DATA ERROR] key={key} error={e}")
+        logger.error(f"[DB SAVE DATA] key={key} {e}")
 
 async def db_get_all_users() -> list:
-    """Saare users ki list lo"""
     if not users_col:
         return []
     try:
-        cursor = users_col.find({}, {"_id": 0})
-        return await cursor.to_list(length=None)
+        return await users_col.find({}, {"_id": 0}).to_list(length=None)
     except Exception as e:
-        logger.error(f"[DB GET USERS ERROR] {e}")
+        logger.error(f"[DB GET USERS] {e}")
         return []
 
 async def db_user_count() -> int:
@@ -135,7 +136,7 @@ async def db_user_count() -> int:
         return 0
 
 # ══════════════════════════════════════════
-#  AUTO DELETE HELPER
+#  HELPERS
 # ══════════════════════════════════════════
 
 async def auto_delete(msg, delay: int = 10):
@@ -147,11 +148,12 @@ async def auto_delete(msg, delay: int = 10):
 
 async def send_temp(chat, text: str, parse_mode: str = None, delay: int = 10):
     try:
-        sent = await chat.reply_text(text, parse_mode=parse_mode) if parse_mode else await chat.reply_text(text)
+        kwargs = {"parse_mode": parse_mode} if parse_mode else {}
+        sent = await chat.reply_text(text, **kwargs)
         asyncio.create_task(auto_delete(sent, delay))
         return sent
     except Exception as e:
-        logger.error(f"[SEND TEMP ERROR] {e}")
+        logger.error(f"[SEND TEMP] {e}")
 
 # ══════════════════════════════════════════
 #  MENUS
@@ -186,12 +188,12 @@ def admin_inline_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("👑 Owner", callback_data="menu_owner"),
         ],
         [
-            InlineKeyboardButton("📢 Broadcast",     callback_data="menu_broadcast"),
-            InlineKeyboardButton("👥 Users Count",   callback_data="menu_users"),
+            InlineKeyboardButton("📢 Broadcast",   callback_data="menu_broadcast"),
+            InlineKeyboardButton("👥 Users Count", callback_data="menu_users"),
         ],
         [
-            InlineKeyboardButton("📋 Admin List",    callback_data="menu_adminlist"),
-            InlineKeyboardButton("⚙️ Admin Panel",   callback_data="menu_adminpanel"),
+            InlineKeyboardButton("📋 Admin List",  callback_data="menu_adminlist"),
+            InlineKeyboardButton("⚙️ Admin Panel", callback_data="menu_adminpanel"),
         ],
         [InlineKeyboardButton("✏️ Set Custom TG Data", callback_data="menu_setcustomtg")],
         [InlineKeyboardButton("🗄️ Database Backup",    callback_data="menu_dbbackup")],
@@ -248,7 +250,7 @@ async def get_not_joined_channels(bot, user_id: int) -> list:
             if member.status not in JOINED_STATUSES:
                 not_joined.append((name, username))
         except Exception as e:
-            logger.warning(f"[JOIN CHECK ERROR] @{username} uid={user_id}: {e}")
+            logger.warning(f"[JOIN CHECK] @{username} uid={user_id}: {e}")
             not_joined.append((name, username))
     return not_joined
 
@@ -304,9 +306,9 @@ def require_join(func):
 # ══════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await db_save_user(user)
+    user     = update.effective_user
     username = user.username or ""
+    asyncio.create_task(db_save_user(user))   # non-blocking
     logger.info(f"[/start] uid={user.id} @{username}")
     if not is_admin_user(username) and not await check_join(context.bot, user.id):
         await send_join_prompt(update, context)
@@ -316,7 +318,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_join
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await db_save_user(update.effective_user)
+    asyncio.create_task(db_save_user(update.effective_user))
     await update.message.reply_text(HELP_TEXT)
 
 # ══════════════════════════════════════════
@@ -346,26 +348,20 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 # ══════════════════════════════════════════
-#  DB BACKUP — ek click mein poora data
+#  DB BACKUP
 # ══════════════════════════════════════════
 
 async def send_db_backup(target_msg, bot, admin_uid: int):
-    """Admin ko DB ka poora user list bhejo"""
     if not users_col:
         await target_msg.reply_text("❌  MongoDB connected nahi hai.")
         return
-
     status = await target_msg.reply_text("🗄️  Database se data fetch ho raha hai...")
-
     try:
         all_users_db = await db_get_all_users()
         total        = len(all_users_db)
-
         if not all_users_db:
-            await status.edit_text("📭  Database empty hai — koi user nahi mila.")
+            await status.edit_text("📭  Database empty hai.")
             return
-
-        # Readable format mein banao
         lines = [
             "╔══════════════════════════════╗",
             "║  🗄️  DATABASE BACKUP REPORT   ║",
@@ -374,25 +370,19 @@ async def send_db_backup(target_msg, bot, admin_uid: int):
             f"🕐  Generated   : {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
             "╠══════════════════════════════╣",
         ]
-
         for i, u in enumerate(all_users_db, start=1):
-            uid      = u.get("user_id",   "N/A")
-            uname    = u.get("username",  "")
-            name     = u.get("name",      "")
-            fseen    = u.get("first_seen","")[:10] if u.get("first_seen") else "N/A"
-            lseen    = u.get("last_seen", "")[:10] if u.get("last_seen")  else "N/A"
+            uid       = u.get("user_id",   "N/A")
+            uname     = u.get("username",  "")
+            name      = u.get("name",      "")
+            fseen     = u.get("first_seen","")[:10] if u.get("first_seen") else "N/A"
+            lseen     = u.get("last_seen", "")[:10] if u.get("last_seen")  else "N/A"
             uname_str = f"@{uname}" if uname else "no username"
             name_str  = name if name else "no name"
             lines.append(f"{i}. {name_str} | {uname_str} | ID: {uid}")
             lines.append(f"   📅 First: {fseen}  |  Last: {lseen}")
-
         lines.append("╚══════════════════════════════╝")
-
         full_text = "\n".join(lines)
-
-        # Agar text 4096 se zyada ho to file mein bhejo
         if len(full_text) > 4000:
-            import io
             file_content = full_text.encode("utf-8")
             file_obj     = io.BytesIO(file_content)
             file_obj.name = f"rtfbot_backup_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.txt"
@@ -404,9 +394,8 @@ async def send_db_backup(target_msg, bot, admin_uid: int):
             await status.delete()
         else:
             await status.edit_text(full_text)
-
     except Exception as e:
-        logger.error(f"[DB BACKUP ERROR] {e}", exc_info=True)
+        logger.error(f"[DB BACKUP] {e}", exc_info=True)
         await status.edit_text(f"❌  Backup failed: {e}")
 
 # ══════════════════════════════════════════
@@ -414,14 +403,14 @@ async def send_db_backup(target_msg, bot, admin_uid: int):
 # ══════════════════════════════════════════
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query     = update.callback_query
+    query    = update.callback_query
     await query.answer()
-    user_id   = query.from_user.id
-    username  = query.from_user.username or ""
+    user_id  = query.from_user.id
+    username = query.from_user.username or ""
     _is_admin = is_admin_user(username)
     action    = query.data
 
-    logger.info(f"[MENU TAP] uid={user_id} action={action}")
+    logger.info(f"[MENU] uid={user_id} action={action}")
 
     if not _is_admin and not await check_join(context.bot, user_id):
         await send_join_prompt(update, context)
@@ -442,8 +431,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = await db_user_count()
         await query.message.reply_text(
             f"╔══════════════════╗\n║  👥 USER COUNT   ║\n╚══════════════════╝\n"
-            f"📊  Total: `{count}`\n"
-            f"🗄️  Source: MongoDB",
+            f"📊  Total: `{count}`\n🗄️  Source: MongoDB",
             parse_mode="Markdown"
         )
         return
@@ -470,7 +458,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✏️  /setcustomtg @user <data>\n"
             "🗑️  /delcustomtg @user\n"
             "📋  /listcustomtg\n"
-            "🗄️  /dbbackup — DB backup\n"
+            "🗄️  /dbbackup\n"
             "╚══════════════════════════╝"
         )
         return
@@ -532,12 +520,12 @@ def extract_records(data):
                 "fname":   (r.get("fname")   or "N/A").strip(),
                 "address": (r.get("address") or "N/A").strip(),
                 "circle":  (r.get("circle")  or "N/A").strip(),
-                "alt":     str(r.get("alt")  or "N/A"),
+                "alt":     str(r.get("alt")   or "N/A"),
                 "aadhar":  str(r.get("aadhar") or "N/A"),
                 "email":   (r.get("email")   or "N/A"),
             })
     except Exception as e:
-        logger.error(f"[extract_records ERROR] {e}")
+        logger.error(f"[extract_records] {e}")
     return records
 
 def format_num_result(records, number):
@@ -547,7 +535,7 @@ def format_num_result(records, number):
         f"│  📞  N U M B E R  I N F O  │\n"
         f"├─────────────────────────┤\n"
         f"📱  Number  : `{number}`\n"
-        f"📊  Records : {min(len(records),5)} found\n\n"
+        f"📊  Records : {min(len(records), 5)} found\n\n"
     )
     body = ""
     for i, r in enumerate(records[:5], start=1):
@@ -610,7 +598,7 @@ def format_adhar_result(data: dict, adhar_number: str):
         central = "✅ YES" if addl.get("exists_in_central_repository") else "❌ NO"
         header  = (
             f"┌─────────────────────────┐\n"
-            f"│  🪪  A A D H A A R        │\n"
+            f"│  🪪  A A D H A A R       │\n"
             f"├─────────────────────────┤\n"
             f"🔢  Aadhaar : `{adhar_number}`\n\n"
             f"📋━━━ RATION CARD ━━━📋\n"
@@ -630,7 +618,7 @@ def format_adhar_result(data: dict, adhar_number: str):
         footer = f"\n└─────────────────────────┘\n👑  {OWNER}  |  ⚡ ACTIVE"
         return header + body + footer
     except Exception as e:
-        logger.error(f"[format_adhar_result ERROR] {e}")
+        logger.error(f"[format_adhar] {e}")
         return None
 
 def format_upi_result(data: dict, upi_id: str) -> str:
@@ -668,13 +656,13 @@ def format_upi_result(data: dict, upi_id: str) -> str:
         "├─────────────────────────┤",
         cb("💳 UPI ID      ", upi_id),
     ]
-    if name:      lines.append(cb("👤 Name        ", name))
-    if username:  lines.append(cb("🔖 Username    ", username))
+    if name:     lines.append(cb("👤 Name        ", name))
+    if username: lines.append(cb("🔖 Username    ", username))
     lines.append(f"✅ Valid        : {'✅ YES' if valid else '❌ NO'}")
-    if acc_type:  lines.append(cb("🏦 Account Type", acc_type))
-    if bank:      lines.append(cb("🏛️  Bank        ", bank))
-    if bank_type: lines.append(cb("📂 Bank Type   ", bank_type))
-    if ifsc:      lines.append(cb("🔢 IFSC        ", ifsc))
+    if acc_type: lines.append(cb("🏦 Account Type", acc_type))
+    if bank:     lines.append(cb("🏛️  Bank        ", bank))
+    if bank_type:lines.append(cb("📂 Bank Type   ", bank_type))
+    if ifsc:     lines.append(cb("🔢 IFSC        ", ifsc))
     if is_merchant  is not None: lines.append(f"🏪 Merchant    : {tick(is_merchant)}")
     if merchant_ver is not None: lines.append(f"✔️  Merch.Verif : {tick(merchant_ver)}")
     if any([branch, address, city, district, state, contact]):
@@ -701,12 +689,12 @@ def format_vehicle_result(data: dict) -> str:
 
     def v(val):
         s = str(val).strip() if val is not None else ""
-        return s if s and s not in ("None","null","","nan","0","false","False") else None
+        return s if s and s not in ("None", "null", "", "nan", "0", "false", "False") else None
 
-    mob     = v(data.get("mobile_number"))
-    eng     = v(data.get("engine_number"))
-    chassis = v(data.get("chassis_number"))
-    reg_no  = v(data.get("vehicle_number") or data.get("vehicle"))
+    mob          = v(data.get("mobile_number"))
+    eng          = v(data.get("engine_number"))
+    chassis      = v(data.get("chassis_number"))
+    reg_no       = v(data.get("vehicle_number") or data.get("vehicle"))
     father       = v(vd.get("ownerFatherName"))
     reg_auth     = v(vd.get("regAuthority"))
     reg_date     = v(vd.get("regDate"))
@@ -771,7 +759,7 @@ def format_vehicle_result(data: dict) -> str:
     return "\n".join(lines)
 
 # ══════════════════════════════════════════
-#  API FETCHERS
+#  API FETCHERS (concurrent-safe)
 # ══════════════════════════════════════════
 
 async def fetch_deep_api(number: str) -> list:
@@ -779,10 +767,9 @@ async def fetch_deep_api(number: str) -> list:
     if not raw.startswith("91"):
         raw = "91" + raw
     url = SECOND_API_URL.format(number=raw)
-    logger.info(f"[DEEP API] url={url}")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=15) as res:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as res:
                 data    = await res.json(content_type=None)
                 records = []
                 if isinstance(data, dict):
@@ -800,17 +787,20 @@ async def fetch_deep_api(number: str) -> list:
                     records.extend([r for r in data if isinstance(r, dict)])
                 return records
     except Exception as e:
-        logger.error(f"[DEEP API ERROR] {e}")
+        logger.error(f"[DEEP API] {e}")
         return []
 
 async def fetch_num_api(clean_phone: str) -> list:
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(NUM_API_URL.format(number=clean_phone), timeout=15) as res:
+            async with session.get(
+                NUM_API_URL.format(number=clean_phone),
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as res:
                 data = await res.json(content_type=None)
                 return extract_records(data)
     except Exception as e:
-        logger.error(f"[NUM API ERROR] {e}")
+        logger.error(f"[NUM API] {e}")
         return []
 
 def parse_tg_primary(data: dict, input_term: str):
@@ -838,10 +828,9 @@ def parse_tg_primary(data: dict, input_term: str):
 async def fetch_tg_fallback(query_str: str):
     q = query_str if query_str.startswith("@") or query_str.isdigit() else f"@{query_str}"
     url = TG_FALLBACK_API.format(query=q)
-    logger.info(f"[TG FALLBACK API] url={url}")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=20) as res:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as res:
                 raw  = await res.text()
         data = json.loads(raw)
         if not data.get("success"):
@@ -849,18 +838,17 @@ async def fetch_tg_fallback(query_str: str):
         phone = str(data.get("number", ""))
         if not phone or phone.strip() in ("", "None", "null"):
             phone = None
-        return str(data.get("tg_id","N/A")), phone, str(data.get("country","N/A")), str(data.get("country_code","N/A"))
+        return str(data.get("tg_id", "N/A")), phone, str(data.get("country", "N/A")), str(data.get("country_code", "N/A"))
     except Exception as e:
-        logger.error(f"[TG FALLBACK ERROR] {e}")
+        logger.error(f"[TG FALLBACK] {e}")
         return None, None, None, None
 
 # ══════════════════════════════════════════
-#  HANDLE NUMBER
+#  LOOKUP HANDLERS
 # ══════════════════════════════════════════
 
 async def handle_number(update: Update, number: str):
     msg        = update.message or update.callback_query.message
-    user_id    = update.effective_user.id
     status_msg = await msg.reply_text(f"🔍  Searching: `{number}` ...", parse_mode="Markdown")
     try:
         clean = number.strip().replace(" ", "").replace("+91", "")
@@ -873,7 +861,8 @@ async def handle_number(update: Update, number: str):
         deep_data = deep_task if isinstance(deep_task, list) else []
         if not records:
             await status_msg.delete()
-            await send_temp(msg,
+            await send_temp(
+                msg,
                 f"╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n"
                 f"📱  Number: `{clean}`\n⚠️  Koi record nahi mila",
                 parse_mode="Markdown"
@@ -886,18 +875,13 @@ async def handle_number(update: Update, number: str):
         await msg.reply_text(full_msg, parse_mode="Markdown")
         await status_msg.delete()
     except Exception as e:
-        logger.error(f"[NUM LOOKUP ERROR] {e}", exc_info=True)
+        logger.error(f"[NUM LOOKUP] {e}", exc_info=True)
         await msg.reply_text("❌  API Error / Timeout.")
         try: await status_msg.delete()
         except Exception: pass
 
-# ══════════════════════════════════════════
-#  HANDLE TG
-# ══════════════════════════════════════════
-
 async def handle_tg(update: Update, term: str):
     msg     = update.message or update.callback_query.message
-    user_id = update.effective_user.id
     term    = term.strip().lstrip("@")
     if not term:
         await send_temp(msg, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438")
@@ -905,19 +889,21 @@ async def handle_tg(update: Update, term: str):
 
     term_key = term.lower()
     if term_key in custom_tg_data:
-        logger.info(f"[TG LOOKUP] Custom data hit key={term_key}")
         await msg.reply_text(custom_tg_data[term_key], parse_mode="Markdown")
         return
 
     is_userid  = term.isdigit()
-    status_msg = await msg.reply_text(f"🔍  Searching TG {'UserID' if is_userid else 'Username'}: {'#' if is_userid else '@'}{term} ...")
-    url        = TG_USERID_API.format(userid=term) if is_userid else TG_USERNAME_API.format(username=term)
+    status_msg = await msg.reply_text(
+        f"🔍  Searching TG {'UserID' if is_userid else 'Username'}: "
+        f"{'#' if is_userid else '@'}{term} ..."
+    )
+    url = TG_USERID_API.format(userid=term) if is_userid else TG_USERNAME_API.format(username=term)
 
     tg_id = "N/A"; target_uname = term; phone = None; country_code = None; used_fallback = False
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=20) as res:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as res:
                 raw_text = await res.text()
         try:
             data = json.loads(raw_text)
@@ -938,7 +924,8 @@ async def handle_tg(update: Update, term: str):
 
         if not phone and tg_id == "N/A":
             await status_msg.delete()
-            await send_temp(msg,
+            await send_temp(
+                msg,
                 f"╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n"
                 f"🔎  Input : {term}\n⚠️  Dono APIs se data nahi mila\n╚══════════════════════╝"
             )
@@ -957,7 +944,6 @@ async def handle_tg(update: Update, term: str):
             f"└─────────────────────────┘\n"
         )
         num_block = deep_block = ""
-        clean_phone = None
         if phone:
             clean_phone = phone.replace("+", "").replace(" ", "").strip()
             if clean_phone.startswith("91") and len(clean_phone) > 10:
@@ -965,7 +951,7 @@ async def handle_tg(update: Update, term: str):
             num_res, deep_res = await asyncio.gather(
                 fetch_num_api(clean_phone), fetch_deep_api(phone), return_exceptions=True
             )
-            if isinstance(num_res, list)  and num_res:  num_block  = "\n" + format_num_result(num_res, clean_phone)
+            if isinstance(num_res,  list) and num_res:  num_block  = "\n" + format_num_result(num_res, clean_phone)
             if isinstance(deep_res, list) and deep_res:
                 df = format_deep_data(deep_res)
                 if df: deep_block = "\n\n" + df
@@ -977,22 +963,21 @@ async def handle_tg(update: Update, term: str):
     except asyncio.TimeoutError:
         await msg.reply_text("❌  API timeout.")
     except Exception as e:
-        logger.error(f"[TG LOOKUP FATAL] {e}", exc_info=True)
+        logger.error(f"[TG LOOKUP] {e}", exc_info=True)
         await msg.reply_text("❌  Kuch gadbad ho gayi.")
     finally:
         try: await status_msg.delete()
         except Exception: pass
-
-# ══════════════════════════════════════════
-#  HANDLE ADHAR
-# ══════════════════════════════════════════
 
 async def handle_adhar(update: Update, adhar_raw: str):
     msg        = update.message or update.callback_query.message
     status_msg = await msg.reply_text(f"🔍  Searching Aadhaar: `{adhar_raw}` ...", parse_mode="Markdown")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(ADHAR_API_URL.format(number=adhar_raw), timeout=15) as res:
+            async with session.get(
+                ADHAR_API_URL.format(number=adhar_raw),
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as res:
                 data = await res.json(content_type=None)
         if not data.get("success"):
             await status_msg.delete()
@@ -1006,21 +991,20 @@ async def handle_adhar(update: Update, adhar_raw: str):
         await msg.reply_text(formatted, parse_mode="Markdown")
         await status_msg.delete()
     except Exception as e:
-        logger.error(f"[ADHAR ERROR] {e}", exc_info=True)
+        logger.error(f"[ADHAR] {e}", exc_info=True)
         await msg.reply_text("❌  API Error / Timeout.")
         try: await status_msg.delete()
         except Exception: pass
-
-# ══════════════════════════════════════════
-#  HANDLE UPI
-# ══════════════════════════════════════════
 
 async def handle_upi(update: Update, upi_id: str):
     msg        = update.message or update.callback_query.message
     status_msg = await msg.reply_text(f"🔍  Searching UPI: `{upi_id}` ...", parse_mode="Markdown")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(UPI_API_URL.format(upi=upi_id.strip()), timeout=15) as res:
+            async with session.get(
+                UPI_API_URL.format(upi=upi_id.strip()),
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as res:
                 data = await res.json(content_type=None)
         if not data.get("success"):
             await status_msg.delete()
@@ -1029,14 +1013,10 @@ async def handle_upi(update: Update, upi_id: str):
         await msg.reply_text(format_upi_result(data, upi_id), parse_mode="Markdown")
         await status_msg.delete()
     except Exception as e:
-        logger.error(f"[UPI ERROR] {e}", exc_info=True)
+        logger.error(f"[UPI] {e}", exc_info=True)
         await msg.reply_text("❌  API Error / Timeout.")
         try: await status_msg.delete()
         except Exception: pass
-
-# ══════════════════════════════════════════
-#  HANDLE VEHICLE
-# ══════════════════════════════════════════
 
 async def handle_vehicle(update: Update, vehicle_no: str):
     msg        = update.message or update.callback_query.message
@@ -1044,7 +1024,10 @@ async def handle_vehicle(update: Update, vehicle_no: str):
     status_msg = await msg.reply_text(f"🔍  Searching Vehicle: `{vehicle_no}` ...", parse_mode="Markdown")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(VEHICLE_API_URL.format(vehicle=vehicle_no), timeout=20) as res:
+            async with session.get(
+                VEHICLE_API_URL.format(vehicle=vehicle_no),
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as res:
                 data = await res.json(content_type=None)
         if not data.get("success"):
             await status_msg.delete()
@@ -1053,7 +1036,7 @@ async def handle_vehicle(update: Update, vehicle_no: str):
         await msg.reply_text(format_vehicle_result(data), parse_mode="Markdown")
         await status_msg.delete()
     except Exception as e:
-        logger.error(f"[VEHICLE ERROR] {e}", exc_info=True)
+        logger.error(f"[VEHICLE] {e}", exc_info=True)
         await msg.reply_text("❌  API Error / Timeout.")
         try: await status_msg.delete()
         except Exception: pass
@@ -1064,41 +1047,41 @@ async def handle_vehicle(update: Update, vehicle_no: str):
 
 @require_join
 async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await db_save_user(update.effective_user)
+    asyncio.create_task(db_save_user(update.effective_user))
     if not context.args:
         await update.message.reply_text("❌  Usage: /num <number>\n📌  Example: /num 9876543210"); return
     await handle_number(update, context.args[0])
 
 @require_join
 async def tg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await db_save_user(update.effective_user)
+    asyncio.create_task(db_save_user(update.effective_user))
     if not context.args:
         await update.message.reply_text("❌  Usage: /tg <username ya userid>\n📌 /tg rtfgamming\n📌 /tg 8518042438"); return
     await handle_tg(update, context.args[0])
 
 @require_join
 async def adhar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await db_save_user(update.effective_user)
+    asyncio.create_task(db_save_user(update.effective_user))
     if not context.args:
         await update.message.reply_text("❌  Usage: /adhar <aadhaar_number>\n📌 Example: /adhar 598229659586"); return
     await handle_adhar(update, context.args[0].strip())
 
 @require_join
 async def upi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await db_save_user(update.effective_user)
+    asyncio.create_task(db_save_user(update.effective_user))
     if not context.args:
         await update.message.reply_text("❌  Usage: /upi <upi_id>\n📌 Example: /upi 70497398@axl"); return
     await handle_upi(update, context.args[0])
 
 @require_join
 async def vehicle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await db_save_user(update.effective_user)
+    asyncio.create_task(db_save_user(update.effective_user))
     if not context.args:
         await update.message.reply_text("❌  Usage: /vehicle <reg_number>\n📌 Example: /vehicle MH02FZ0555"); return
     await handle_vehicle(update, context.args[0])
 
 # ══════════════════════════════════════════
-#  MESSAGE ROUTER
+#  MESSAGE ROUTER  (concurrent-safe)
 # ══════════════════════════════════════════
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1108,12 +1091,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username  = update.effective_user.username or ""
     text      = update.message.text.strip()
     _is_admin = is_admin_user(username)
-    await db_save_user(update.effective_user)
+    asyncio.create_task(db_save_user(update.effective_user))
 
-    if _is_admin and text.lower().startswith(("/broadcast", "/addadmin", "/removeadmin", "/users", "/listadmins", "/admin", "/setcustomtg", "/delcustomtg", "/listcustomtg", "/dbbackup")):
+    # Admin text commands
+    if _is_admin and text.lower().startswith((
+        "/broadcast", "/addadmin", "/removeadmin", "/users",
+        "/listadmins", "/admin", "/setcustomtg", "/delcustomtg",
+        "/listcustomtg", "/dbbackup"
+    )):
         await _handle_admin_text(update, context, text)
         return
 
+    # Per-user state — safe for concurrent users
     choice = user_state.get(user_id)
     if not choice:
         return
@@ -1130,9 +1119,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for uid in uids:
             try:
                 await context.bot.send_message(chat_id=uid, text=text)
-                success += 1; await asyncio.sleep(0.05)
+                success += 1
+                await asyncio.sleep(0.05)
             except Exception as e:
-                logger.warning(f"[BROADCAST FAIL] uid={uid} error={e}"); failed += 1
+                logger.warning(f"[BROADCAST FAIL] uid={uid} {e}")
+                failed += 1
         await status.edit_text(
             f"╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n"
             f"✅  Delivered : {success}\n❌  Failed    : {failed}\n👥  Total     : {len(uids)}"
@@ -1178,7 +1169,7 @@ async def _handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await context.bot.send_message(chat_id=uid, text=msg_text)
                 success += 1; await asyncio.sleep(0.05)
             except Exception as e:
-                logger.warning(f"[BROADCAST FAIL] uid={uid} error={e}"); failed += 1
+                logger.warning(f"[BROADCAST FAIL] uid={uid} {e}"); failed += 1
         await status.edit_text(f"✅ Delivered: {success}\n❌ Failed: {failed}\n👥 Total: {len(uids)}")
     elif text.lower() == "/users":
         count = await db_user_count()
@@ -1223,7 +1214,7 @@ async def _handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await db_save_data(f"customtg:{target}", {"username": target, "data": custom_text})
         await update.message.reply_text(f"✅  Custom data set!\n👤 Key: `{target}`", parse_mode="Markdown")
     elif text.lower().startswith("/delcustomtg"):
-        parts  = text.split()
+        parts = text.split()
         if len(parts) < 2:
             await update.message.reply_text("❌  Usage: /delcustomtg @username"); return
         target = parts[1].lstrip("@").lower()
@@ -1237,12 +1228,12 @@ async def _handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await update.message.reply_text("📋  Koi custom TG data set nahi hai."); return
         lines = ["╔══════════════════════════╗", "║  📋  CUSTOM TG DATA LIST  ║", "╠══════════════════════════╣"]
         for k, v in custom_tg_data.items():
-            lines.append(f"👤 `{k}`\n   📝 {v[:60]}{'...' if len(v)>60 else ''}")
+            lines.append(f"👤 `{k}`\n   📝 {v[:60]}{'...' if len(v) > 60 else ''}")
         lines.append("╚══════════════════════════╝")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 # ══════════════════════════════════════════
-#  MAIN
+#  MAIN — Render ready (no yaml needed)
 # ══════════════════════════════════════════
 
 async def post_init(app):
@@ -1256,7 +1247,7 @@ async def post_init(app):
         BotCommand("vehicle", "🚗 Vehicle Lookup"),
         BotCommand("help",    "❓ Help Guide"),
     ])
-    logger.info("[BOT] Commands registered. Bot live.")
+    logger.info("[BOT] Commands registered. Bot live ✅")
 
 def main():
     if not BOT_TOKEN:
@@ -1267,6 +1258,7 @@ def main():
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .post_init(post_init)
+        .concurrent_updates(True)          # ← Multiple users simultaneously
         .build()
     )
     app.add_handler(CommandHandler("start",       start))
@@ -1287,7 +1279,7 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     logger.info("[BOT] All handlers registered. Polling started.")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
