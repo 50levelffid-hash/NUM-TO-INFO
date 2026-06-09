@@ -5,9 +5,8 @@
 //  Render pe version issues nahi aayenge ab
 // ════════════════════════════════════════════
 
-const express  = require("express");
-const fetch    = require("node-fetch");
-const FormData = require("form-data");
+const express = require("express");
+const fetch   = require("node-fetch");
 const { MongoClient } = require("mongodb");
 
 const app = express();
@@ -17,7 +16,7 @@ app.use(express.json());
 const BOT_TOKEN  = process.env.BOT_TOKEN  || "";
 const MONGO_URI  = process.env.MONGO_URI  || "";
 const PORT       = process.env.PORT       || 3000;
-const WEBHOOK_URL= process.env.WEBHOOK_URL|| "";
+const WEBHOOK_URL= process.env.WEBHOOK_URL|| ""; // e.g. https://yourapp.onrender.com
 const OWNER      = "@RTFGAMMING";
 
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
@@ -39,8 +38,8 @@ const JOINED_STATUSES = new Set(["member", "administrator", "creator", "restrict
 
 // ── In-memory state ──────────────────────────
 let admins        = ["@rtfgamming"];
-const userState   = {};
-const customTgData= {};
+const userState   = {};     // { userId: "number"|"tg"|"adhar"|"upi"|"vehicle"|"broadcast"|"setcustomtg_step1"|"setcustomtg_step2::key" }
+const customTgData= {};     // { username_lower: "custom text" }
 
 // ── MongoDB ──────────────────────────────────
 let mongoClient, db, usersCol, dataCol;
@@ -108,22 +107,17 @@ async function tgApi(method, body = {}) {
   } catch (e) { console.error(`[TG ${method}]`, e.message); return null; }
 }
 
-// FIX 1: sendMessage ab reply_to_message_id support karta hai
-const sendMessage     = (chat_id, text, extra = {}) =>
-  tgApi("sendMessage", { chat_id, text, parse_mode: "Markdown", disable_web_page_preview: true, ...extra });
+const sendMessage       = (chat_id, text, extra = {})      => tgApi("sendMessage",      { chat_id, text, parse_mode: "Markdown", disable_web_page_preview: true, ...extra });
+const editMessageText   = (chat_id, message_id, text, extra={}) => tgApi("editMessageText", { chat_id, message_id, text, parse_mode: "Markdown", disable_web_page_preview: true, ...extra });
+const deleteMessage     = (chat_id, message_id)            => tgApi("deleteMessage",    { chat_id, message_id });
+const answerCallback    = (callback_query_id, text = "", show_alert = false) => tgApi("answerCallbackQuery", { callback_query_id, text, show_alert });
+const getChatMember     = (chat_id, user_id)               => tgApi("getChatMember",    { chat_id, user_id });
+const setMyCommands     = (commands)                       => tgApi("setMyCommands",    { commands });
+const setWebhook        = (url)                            => tgApi("setWebhook",       { url, drop_pending_updates: true });
+const sendDocument      = (chat_id, body)                  => tgApi("sendDocument",     { chat_id, ...body });
 
-const editMessageText = (chat_id, message_id, text, extra = {}) =>
-  tgApi("editMessageText", { chat_id, message_id, text, parse_mode: "Markdown", disable_web_page_preview: true, ...extra });
-
-const deleteMessage   = (chat_id, message_id)  => tgApi("deleteMessage",       { chat_id, message_id });
-const answerCallback  = (callback_query_id, text = "", show_alert = false) => tgApi("answerCallbackQuery", { callback_query_id, text, show_alert });
-const getChatMember   = (chat_id, user_id)     => tgApi("getChatMember",       { chat_id, user_id });
-const setMyCommands   = (commands)             => tgApi("setMyCommands",       { commands });
-const setWebhook      = (url)                  => tgApi("setWebhook",          { url, drop_pending_updates: true });
-
-async function sendTemp(chat_id, text, reply_to_message_id = null, delay = 10000) {
-  const extra = reply_to_message_id ? { reply_to_message_id } : {};
-  const msg = await sendMessage(chat_id, text, extra);
+async function sendTemp(chat_id, text, delay = 10000) {
+  const msg = await sendMessage(chat_id, text);
   if (msg) setTimeout(() => deleteMessage(chat_id, msg.message_id), delay);
   return msg;
 }
@@ -149,7 +143,7 @@ function isAdmin(username) {
 }
 
 async function sendJoinPrompt(chatId, callbackQueryId = null) {
-  const missing = await getNotJoinedChannels(chatId);
+  const missing = await getNotJoinedChannels(chatId); // note: chatId == userId in private
   if (!missing.length) return false;
   const buttons = missing.map(ch => [{ text: `➕ ${ch.name}`, url: `https://t.me/${ch.username}` }]);
   buttons.push([{ text: "✅ VERIFY JOIN", callback_data: "verify" }]);
@@ -431,13 +425,15 @@ async function sendDbBackup(chatId) {
     lines.push("╚══════════════════════════════╝");
     const fullText = lines.join("\n");
     if (fullText.length > 4000) {
-      const buf   = Buffer.from(fullText, "utf8");
+      const buf = Buffer.from(fullText, "utf8");
       const fname = `rtfbot_backup_${new Date().toISOString().slice(0,10)}.txt`;
-      const form  = new FormData();
-      form.append("chat_id", String(chatId));
+      // Send as document via multipart
+      const FormData = require("form-data");
+      const form = new FormData();
+      form.append("chat_id", chatId);
       form.append("caption", `🗄️ RTF Bot DB Backup — ${total} users`);
       form.append("document", buf, { filename: fname, contentType: "text/plain" });
-      await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, headers: form.getHeaders() });
+      await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form });
       await deleteMessage(chatId, statusMsg.message_id);
     } else {
       await editMessageText(chatId, statusMsg.message_id, fullText);
@@ -509,47 +505,35 @@ async function fetchTgFallback(queryStr) {
 }
 
 // ── LOOKUP HANDLERS ───────────────────────────
-// FIX 1: sabhi handlers me replyTo pass ho raha hai
-async function handleNumber(chatId, number, replyTo = null) {
-  const extra = replyTo ? { reply_to_message_id: replyTo } : {};
-  const statusMsg = await sendMessage(chatId, `🔍  Searching: \`${number}\` ...`, extra);
+async function handleNumber(chatId, number) {
+  const statusMsg = await sendMessage(chatId, `🔍  Searching: \`${number}\` ...`);
   try {
     let clean = number.trim().replace(/\s/g,"").replace("+91","");
     if (clean.startsWith("91") && clean.length > 10) clean = clean.slice(2);
     const [records, deepData] = await Promise.all([fetchNumApi(clean), fetchDeepApi(number)]);
-    if (statusMsg) await deleteMessage(chatId, statusMsg.message_id);
+    await deleteMessage(chatId, statusMsg.message_id);
     if (!records.length) {
-      // FIX 2: "kuch gadbad" hata ke "DATA NOT FOUND" diya
-      await sendTemp(chatId,
-        `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: \`${clean}\``,
-        replyTo);
+      await sendTemp(chatId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: \`${clean}\`\n⚠️  Koi record nahi mila`);
       return;
     }
     let full = formatNumResult(records, clean);
     const deep = formatDeepData(deepData);
     if (deep) full += "\n\n" + deep;
-    await sendMessage(chatId, full, extra);
+    await sendMessage(chatId, full);
   } catch (e) {
     console.error("[NUM LOOKUP]", e);
-    // FIX 2: error pe bhi DATA NOT FOUND
-    await sendTemp(chatId,
-      `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: \`${number}\``,
-      replyTo);
-    if (statusMsg) deleteMessage(chatId, statusMsg.message_id);
+    await sendMessage(chatId, "❌  API Error / Timeout.");
+    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
-async function handleTg(chatId, term, replyTo = null) {
-  const extra = replyTo ? { reply_to_message_id: replyTo } : {};
+async function handleTg(chatId, term) {
   term = term.trim().replace(/^@/,"");
-  if (!term) {
-    await sendTemp(chatId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438", replyTo);
-    return;
-  }
+  if (!term) { await sendTemp(chatId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438"); return; }
   const termKey = term.toLowerCase();
-  if (customTgData[termKey]) { await sendMessage(chatId, customTgData[termKey], extra); return; }
-  const isUserId  = /^\d+$/.test(term);
-  const statusMsg = await sendMessage(chatId, `🔍  Searching TG ${isUserId ? "UserID" : "Username"}: ${isUserId ? "#" : "@"}${term} ...`, extra);
+  if (customTgData[termKey]) { await sendMessage(chatId, customTgData[termKey]); return; }
+  const isUserId = /^\d+$/.test(term);
+  const statusMsg = await sendMessage(chatId, `🔍  Searching TG ${isUserId ? "UserID" : "Username"}: ${isUserId ? "#" : "@"}${term} ...`);
   let tgId = "N/A", targetUname = term, phone = null, countryCode = null, usedFallback = false;
   try {
     const url = isUserId ? TG_USERID_API.replace("{userid}", term) : TG_USERNAME_API.replace("{username}", term);
@@ -565,12 +549,9 @@ async function handleTg(chatId, term, replyTo = null) {
       const fb = await fetchTgFallback(term);
       if (fb.phone) { usedFallback = true; phone = fb.phone; countryCode = fb.countryCode || countryCode; if (fb.tgId && fb.tgId !== "N/A") tgId = fb.tgId; }
     }
-    if (statusMsg) await deleteMessage(chatId, statusMsg.message_id);
+    await deleteMessage(chatId, statusMsg.message_id);
     if (!phone && tgId === "N/A") {
-      // FIX 2: "kuch gadbad" → DATA NOT FOUND
-      await sendTemp(chatId,
-        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╚══════════════════════╝\n🔎  Input : ${term}`,
-        replyTo);
+      await sendTemp(chatId, `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Dono APIs se data nahi mila\n╚══════════════════════╝`);
       return;
     }
     const srcLabel = usedFallback ? "🔁 Fallback" : "✅ Primary";
@@ -583,93 +564,65 @@ async function handleTg(chatId, term, replyTo = null) {
       if (numRes.length) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
       if (deepRes.length) { const df = formatDeepData(deepRes); if (df) tgBlock += "\n\n" + df; }
     }
-    await sendMessage(chatId, tgBlock, extra);
+    await sendMessage(chatId, tgBlock);
   } catch (e) {
     console.error("[TG LOOKUP]", e);
-    // FIX 2: error pe bhi DATA NOT FOUND
-    await sendTemp(chatId,
-      `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╚══════════════════════╝\n🔎  Input : ${term}`,
-      replyTo);
-    if (statusMsg) deleteMessage(chatId, statusMsg.message_id);
+    await sendMessage(chatId, "❌  Kuch gadbad ho gayi.");
+    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
-async function handleAdhar(chatId, adharRaw, replyTo = null) {
-  const extra = replyTo ? { reply_to_message_id: replyTo } : {};
-  const statusMsg = await sendMessage(chatId, `🔍  Searching Aadhaar: \`${adharRaw}\` ...`, extra);
+async function handleAdhar(chatId, adharRaw) {
+  const statusMsg = await sendMessage(chatId, `🔍  Searching Aadhaar: \`${adharRaw}\` ...`);
   try {
     const res  = await fetch(ADHAR_API_URL.replace("{number}", adharRaw), { signal: AbortSignal.timeout(15000) });
     const data = await res.json();
-    if (statusMsg) await deleteMessage(chatId, statusMsg.message_id);
-    const resultObj   = data.result || {};
-    const resultsList = resultObj.results || [];
+    await deleteMessage(chatId, statusMsg.message_id);
+    // Check nested result.success OR results array exists
+    const resultObj  = data.result || {};
+    const resultsList= resultObj.results || [];
     if (!data.success && !resultObj.success && !resultsList.length) {
-      await sendTemp(chatId,
-        `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: \`${adharRaw}\``,
-        replyTo);
+      await sendTemp(chatId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: \`${adharRaw}\``);
       return;
     }
     const formatted = formatAdharResult(data, adharRaw);
-    if (!formatted) {
-      await sendTemp(chatId,
-        `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: \`${adharRaw}\``,
-        replyTo);
-      return;
-    }
-    await sendMessage(chatId, formatted, extra);
+    if (!formatted) { await sendTemp(chatId, `❌  Data format error — Aadhaar: \`${adharRaw}\``); return; }
+    await sendMessage(chatId, formatted);
   } catch (e) {
     console.error("[ADHAR]", e);
-    await sendTemp(chatId,
-      `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: \`${adharRaw}\``,
-      replyTo);
-    if (statusMsg) deleteMessage(chatId, statusMsg.message_id);
+    await sendMessage(chatId, "❌  API Error / Timeout.");
+    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
-async function handleUpi(chatId, upiId, replyTo = null) {
-  const extra = replyTo ? { reply_to_message_id: replyTo } : {};
-  const statusMsg = await sendMessage(chatId, `🔍  Searching UPI: \`${upiId}\` ...`, extra);
+async function handleUpi(chatId, upiId) {
+  const statusMsg = await sendMessage(chatId, `🔍  Searching UPI: \`${upiId}\` ...`);
   try {
     const res  = await fetch(UPI_API_URL.replace("{upi}", upiId.trim()), { signal: AbortSignal.timeout(15000) });
     const data = await res.json();
-    if (statusMsg) await deleteMessage(chatId, statusMsg.message_id);
-    if (!data.success) {
-      await sendTemp(chatId,
-        `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n💳  UPI: \`${upiId}\``,
-        replyTo);
-      return;
-    }
-    await sendMessage(chatId, formatUpiResult(data, upiId), extra);
+    await deleteMessage(chatId, statusMsg.message_id);
+    if (!data.success) { await sendTemp(chatId, `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: \`${upiId}\``); return; }
+    await sendMessage(chatId, formatUpiResult(data, upiId));
   } catch (e) {
     console.error("[UPI]", e);
-    await sendTemp(chatId,
-      `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n💳  UPI: \`${upiId}\``,
-      replyTo);
-    if (statusMsg) deleteMessage(chatId, statusMsg.message_id);
+    await sendMessage(chatId, "❌  API Error / Timeout.");
+    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
-async function handleVehicle(chatId, vehicleNo, replyTo = null) {
+async function handleVehicle(chatId, vehicleNo) {
   vehicleNo = vehicleNo.trim().toUpperCase().replace(/\s/g,"");
-  const extra = replyTo ? { reply_to_message_id: replyTo } : {};
-  const statusMsg = await sendMessage(chatId, `🔍  Searching Vehicle: \`${vehicleNo}\` ...`, extra);
+  const statusMsg = await sendMessage(chatId, `🔍  Searching Vehicle: \`${vehicleNo}\` ...`);
   try {
     const res  = await fetch(VEHICLE_API_URL.replace("{vehicle}", vehicleNo), { signal: AbortSignal.timeout(20000) });
     const data = await res.json();
-    if (statusMsg) await deleteMessage(chatId, statusMsg.message_id);
-    if (!data.success) {
-      await sendTemp(chatId,
-        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╚══════════════════════╝\n🚗  Vehicle: \`${vehicleNo}\``,
-        replyTo);
-      return;
-    }
-    await sendMessage(chatId, formatVehicleResult(data), extra);
+    await deleteMessage(chatId, statusMsg.message_id);
+    if (!data.success) { await sendTemp(chatId, `╔══════════════════════╗\n║  ❌ VEHICLE NOT FOUND  ║\n╚══════════════════════╝\n🚗  Vehicle: \`${vehicleNo}\``); return; }
+    await sendMessage(chatId, formatVehicleResult(data));
   } catch (e) {
     console.error("[VEHICLE]", e);
-    await sendTemp(chatId,
-      `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╚══════════════════════╝\n🚗  Vehicle: \`${vehicleNo}\``,
-      replyTo);
-    if (statusMsg) deleteMessage(chatId, statusMsg.message_id);
+    await sendMessage(chatId, "❌  API Error / Timeout.");
+    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
@@ -686,19 +639,19 @@ async function handleUpdate(update) {
     const text     = (msg.text || "").trim();
     const _isAdmin = isAdmin(from.username);
 
+    // Save user async
     dbSaveUser(from);
 
-    // FIX: sirf commands pe respond karo — random text = silent ignore
-    if (!text || !text.startsWith("/")) return;
+    if (!text) return;
 
     // Admin text commands
     if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin","/setcustomtg","/delcustomtg","/listcustomtg","/dbbackup"].some(c => text.toLowerCase().startsWith(c))) {
       return await handleAdminText(chatId, from.id, text, _isAdmin);
     }
 
-    // Per-user state machine — sirf jab state active ho
+    // Per-user state machine
     const choice = userState[from.id];
-    if (!choice) return;
+    if (!choice) return; // silent ignore
 
     if (!_isAdmin && !(await checkJoin(from.id))) {
       await sendJoinPrompt(chatId);
@@ -717,7 +670,12 @@ async function handleUpdate(update) {
       }
       await editMessageText(chatId, status.message_id,
         `╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}`);
-    } else if (choice === "setcustomtg_step1" && _isAdmin) {
+    } else if (choice === "number")  { await handleNumber(chatId, text); }
+    else if (choice === "tg")        { await handleTg(chatId, text); }
+    else if (choice === "adhar")     { await handleAdhar(chatId, text); }
+    else if (choice === "upi")       { await handleUpi(chatId, text); }
+    else if (choice === "vehicle")   { await handleVehicle(chatId, text); }
+    else if (choice === "setcustomtg_step1" && _isAdmin) {
       userState[from.id] = `setcustomtg_step2::${text.trim().replace(/^@/,"").toLowerCase()}`;
       await sendMessage(chatId, `✅  Username: \`${text.trim()}\`\n\n📥  Ab custom data bhejo:`);
       return;
@@ -886,17 +844,25 @@ async function handleAdminText(chatId, userId, text, _isAdmin) {
     await sendMessage(chatId, lines.join("\n"));
     return;
   }
+
+  // Command-based lookups
+  const match = text.match(/^\/(\w+)\s+([\s\S]+)$/);
+  if (!match) return;
+  const [, cmd, args] = match;
+  if (cmd === "num")     { await handleNumber(chatId, args); return; }
+  if (cmd === "tg")      { await handleTg(chatId, args); return; }
+  if (cmd === "adhar")   { await handleAdhar(chatId, args); return; }
+  if (cmd === "upi")     { await handleUpi(chatId, args); return; }
+  if (cmd === "vehicle") { await handleVehicle(chatId, args); return; }
 }
 
 // ── SLASH COMMAND ROUTER ──────────────────────
 async function handleCommand(msg) {
   const from   = msg.from;
   if (!from || from.is_bot) return;
-  const chatId  = msg.chat.id;
-  const text    = (msg.text || "").trim();
-  const _isAdm  = isAdmin(from.username);
-  // FIX 1: group me reply_to set karo
-  const replyTo = (msg.chat.type === "group" || msg.chat.type === "supergroup") ? msg.message_id : null;
+  const chatId = msg.chat.id;
+  const text   = (msg.text || "").trim();
+  const _isAdm = isAdmin(from.username);
 
   dbSaveUser(from);
 
@@ -914,20 +880,20 @@ async function handleCommand(msg) {
   } else if (cmd === "help") {
     await sendMessage(chatId, HELP_TEXT);
   } else if (cmd === "num") {
-    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /num <number>\n📌  Example: /num 9876543210"); return; }
-    await handleNumber(chatId, args, replyTo);
+    if (!args) { await sendMessage(chatId, "❌  Usage: /num <number>\n📌  Example: /num 9876543210"); return; }
+    await handleNumber(chatId, args);
   } else if (cmd === "tg") {
-    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /tg <username ya userid>\n📌 /tg rtfgamming\n📌 /tg 8518042438"); return; }
-    await handleTg(chatId, args, replyTo);
+    if (!args) { await sendMessage(chatId, "❌  Usage: /tg <username ya userid>\n📌 /tg rtfgamming\n📌 /tg 8518042438"); return; }
+    await handleTg(chatId, args);
   } else if (cmd === "adhar") {
-    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /adhar <aadhaar_number>\n📌 Example: /adhar 598229659586"); return; }
-    await handleAdhar(chatId, args.trim(), replyTo);
+    if (!args) { await sendMessage(chatId, "❌  Usage: /adhar <aadhaar_number>\n📌 Example: /adhar 598229659586"); return; }
+    await handleAdhar(chatId, args.trim());
   } else if (cmd === "upi") {
-    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /upi <upi_id>\n📌 Example: /upi 70497398@axl"); return; }
-    await handleUpi(chatId, args, replyTo);
+    if (!args) { await sendMessage(chatId, "❌  Usage: /upi <upi_id>\n📌 Example: /upi 70497398@axl"); return; }
+    await handleUpi(chatId, args);
   } else if (cmd === "vehicle") {
-    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /vehicle <reg_number>\n📌 Example: /vehicle MH02FZ0555"); return; }
-    await handleVehicle(chatId, args, replyTo);
+    if (!args) { await sendMessage(chatId, "❌  Usage: /vehicle <reg_number>\n📌 Example: /vehicle MH02FZ0555"); return; }
+    await handleVehicle(chatId, args);
   } else if (_isAdm) {
     await handleAdminText(chatId, from.id, text, true);
   }
@@ -935,51 +901,25 @@ async function handleCommand(msg) {
 
 // ── EXPRESS WEBHOOK ───────────────────────────
 app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
-  res.sendStatus(200);
+  res.sendStatus(200); // respond immediately — Telegram needs <3s
   const update = req.body;
   if (!update) return;
+  // Route to correct handler
   if (update.callback_query) { handleUpdate(update); return; }
   const msg = update.message || update.edited_message;
   if (!msg) return;
   const text = (msg.text || "").trim();
-  // FIX: sirf commands route karo — random text ignore
-  if (text.startsWith("/")) { handleCommand(msg); }
-  // callback_query alag handle hota hai upar — baaki sab ignore
+  if (text.startsWith("/")) { handleCommand(msg); } else { handleUpdate(update); }
 });
 
 app.get("/", (_req, res) => res.send("RTF Bot is running ✅"));
-
-// ── POLLING MODE ──────────────────────────────
-let pollingOffset = 0;
-
-async function pollOnce() {
-  try {
-    const res  = await fetch(`${TG_BASE}/getUpdates?offset=${pollingOffset}&timeout=25&limit=50`, { signal: AbortSignal.timeout(30000) });
-    const json = await res.json();
-    if (!json.ok || !json.result.length) return;
-    for (const update of json.result) {
-      pollingOffset = update.update_id + 1;
-      if (update.callback_query) { handleUpdate(update).catch(e => console.error("[POLL CB]", e.message)); continue; }
-      const msg = update.message || update.edited_message;
-      if (!msg) continue;
-      const text = (msg.text || "").trim();
-      // FIX: sirf commands
-      if (text.startsWith("/")) { handleCommand(msg).catch(e => console.error("[POLL CMD]", e.message)); }
-    }
-  } catch (e) { if (!e.message.includes("abort")) console.error("[POLL]", e.message); }
-}
-
-async function startPolling() {
-  await tgApi("deleteWebhook", { drop_pending_updates: true });
-  console.log("[BOT] Polling mode active ✅");
-  const loop = async () => { while (true) { await pollOnce(); await new Promise(r => setTimeout(r, 300)); } };
-  loop();
-}
 
 // ── STARTUP ───────────────────────────────────
 async function start() {
   if (!BOT_TOKEN) { console.error("[BOT] BOT_TOKEN not set! Exiting."); process.exit(1); }
   await initDb();
+
+  // Register bot commands
   await setMyCommands([
     { command: "start",   description: "🏠 Main Menu" },
     { command: "num",     description: "📞 Number Lookup" },
@@ -989,16 +929,17 @@ async function start() {
     { command: "vehicle", description: "🚗 Vehicle Lookup" },
     { command: "help",    description: "❓ Help Guide" },
   ]);
+
+  // Set webhook
   if (WEBHOOK_URL) {
     const wh = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
     await setWebhook(wh);
-    console.log(`[BOT] Webhook mode → ${wh}`);
-    app.listen(PORT, () => console.log(`[BOT] Server on port ${PORT} ✅`));
+    console.log(`[BOT] Webhook set → ${wh}`);
   } else {
-    console.log("[BOT] WEBHOOK_URL not set — polling mode...");
-    app.listen(PORT, () => console.log(`[BOT] Health server on port ${PORT} ✅`));
-    await startPolling();
+    console.warn("[BOT] WEBHOOK_URL not set — webhook NOT registered. Set it in Render env vars.");
   }
+
+  app.listen(PORT, () => console.log(`[BOT] Server listening on port ${PORT} ✅`));
 }
 
 start();
