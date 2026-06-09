@@ -102,30 +102,38 @@ async function tgApi(method, body = {}) {
   } catch (e) { console.error(`[TG ${method}]`, e.message); return null; }
 }
 
-// reply_to_message_id support — jis user ke message ka reply karein
-const sendMessage     = (chat_id, text, extra = {}) => tgApi("sendMessage", { chat_id, text, parse_mode: "Markdown", disable_web_page_preview: true, ...extra });
+const sendMessage     = (chat_id, text, extra = {}) => tgApi("sendMessage",     { chat_id, text, parse_mode: "Markdown", disable_web_page_preview: true, ...extra });
 const editMessageText = (chat_id, message_id, text, extra = {}) => tgApi("editMessageText", { chat_id, message_id, text, parse_mode: "Markdown", disable_web_page_preview: true, ...extra });
-const deleteMessage   = (chat_id, message_id) => tgApi("deleteMessage", { chat_id, message_id });
+const deleteMessage   = (chat_id, message_id) => tgApi("deleteMessage",   { chat_id, message_id });
 const answerCallback  = (callback_query_id, text = "", show_alert = false) => tgApi("answerCallbackQuery", { callback_query_id, text, show_alert });
-const getChatMember   = (chat_id, user_id) => tgApi("getChatMember", { chat_id, user_id });
-const setMyCommands   = (commands) => tgApi("setMyCommands", { commands });
-const setWebhook      = (url) => tgApi("setWebhook", { url, drop_pending_updates: true });
+const getChatMember   = (chat_id, user_id)    => tgApi("getChatMember",   { chat_id, user_id });
+const setMyCommands   = (commands)            => tgApi("setMyCommands",   { commands });
+const setWebhook      = (url)                 => tgApi("setWebhook",      { url, drop_pending_updates: true });
 
-// sendTemp — message bhejo aur auto-delete karo (default 10s)
-// user_message_id — jis command ka reply karna hai uska id
-async function sendTemp(chat_id, text, delay = 10000, user_message_id = null) {
-  const extra = {};
-  if (user_message_id) extra.reply_to_message_id = user_message_id;
-  const msg = await sendMessage(chat_id, text, extra);
-  if (msg) setTimeout(() => deleteMessage(chat_id, msg.message_id), delay);
-  return msg;
+// ─────────────────────────────────────────────
+//  KEY FIX: sendDataNotFound
+//  Jab data nahi mila:
+//    1. "Data Not Found" reply bhejo user ke command message ka reply me
+//    2. 15 second baad: user ka command message DELETE + data not found message DELETE
+//    3. Agar data mila: sirf reply me data bhejo, kuch delete mat karo
+// ─────────────────────────────────────────────
+
+async function sendDataNotFound(chatId, userMsgId, notFoundText) {
+  // Step 1: Data not found ka message bhejo — user ke command ka reply
+  const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
+  const notFoundMsg = await sendMessage(chatId, notFoundText, extra);
+
+  // Step 2: 15 second baad dono delete karo
+  setTimeout(async () => {
+    if (notFoundMsg) await deleteMessage(chatId, notFoundMsg.message_id);
+    if (userMsgId)   await deleteMessage(chatId, userMsgId);
+  }, 15000);
 }
 
-// sendReply — user ke message ka reply karo, data found hone pe permanent
-async function sendReply(chat_id, text, user_message_id = null) {
-  const extra = {};
-  if (user_message_id) extra.reply_to_message_id = user_message_id;
-  return sendMessage(chat_id, text, extra);
+// Data mila — sirf reply me bhejo, kuch delete nahi
+async function sendDataFound(chatId, userMsgId, text) {
+  const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
+  return sendMessage(chatId, text, extra);
 }
 
 // ── JOIN CHECK ────────────────────────────────
@@ -394,7 +402,6 @@ function formatVehicleResult(data) {
 }
 
 // ── DB BACKUP ─────────────────────────────────
-// FIX: form-data ab top pe require ho gaya hai, dynamic require hata diya
 async function sendDbBackup(chatId) {
   if (!usersCol) { await sendMessage(chatId, "❌  MongoDB connected nahi hai."); return; }
   const statusMsg = await sendMessage(chatId, "🗄️  Database se data fetch ho raha hai...");
@@ -411,19 +418,12 @@ async function sendDbBackup(chatId) {
       "╠══════════════════════════════╣",
     ];
     allUsers.forEach((u, i) => {
-      const uid   = u.user_id || "N/A";
-      const uname = u.username ? `@${u.username}` : "no username";
-      const name  = u.name  || "no name";
-      const fseen = (u.first_seen||"").slice(0,10) || "N/A";
-      const lseen = (u.last_seen ||"").slice(0,10) || "N/A";
-      lines.push(`${i+1}. ${name} | ${uname} | ID: ${uid}`);
-      lines.push(`   📅 First: ${fseen}  |  Last: ${lseen}`);
+      lines.push(`${i+1}. ${u.name||"no name"} | ${u.username ? "@"+u.username : "no username"} | ID: ${u.user_id||"N/A"}`);
+      lines.push(`   📅 First: ${(u.first_seen||"").slice(0,10)||"N/A"}  |  Last: ${(u.last_seen||"").slice(0,10)||"N/A"}`);
     });
     lines.push("╚══════════════════════════════╝");
     const fullText = lines.join("\n");
-
     if (fullText.length > 4000) {
-      // File ke roop mein bhejo — form-data use karke (ab properly imported hai)
       const buf   = Buffer.from(fullText, "utf8");
       const fname = `rtfbot_backup_${new Date().toISOString().slice(0,10)}.txt`;
       const form  = new FormData();
@@ -503,47 +503,65 @@ async function fetchTgFallback(queryStr) {
   } catch (e) { console.error("[TG FALLBACK]", e.message); return {}; }
 }
 
-// ── LOOKUP HANDLERS ───────────────────────────
-// FIX: har handler mein userMsgId pass karo — reply karein + command delete karein
+// ══════════════════════════════════════════════
+//  LOOKUP HANDLERS
+//  RULE:
+//    - Data mila    → user ke command ka reply me data bhejo. Kuch DELETE NAHI.
+//    - Data nahi mila → user ke command ka reply me "not found" bhejo,
+//                       15 sec baad: not-found msg + user command msg dono delete
+// ══════════════════════════════════════════════
 
 async function handleNumber(chatId, number, userMsgId = null) {
-  // User ka command message delete karo
-  if (userMsgId) deleteMessage(chatId, userMsgId);
+  // Searching status — plain message, not a reply
   const statusMsg = await sendMessage(chatId, `🔍  Searching: \`${number}\` ...`);
   try {
     let clean = number.trim().replace(/\s/g,"").replace("+91","");
     if (clean.startsWith("91") && clean.length > 10) clean = clean.slice(2);
+
     const [records, deepData] = await Promise.all([fetchNumApi(clean), fetchDeepApi(number)]);
+
+    // Delete searching message
     await deleteMessage(chatId, statusMsg.message_id);
+
     if (!records.length) {
-      // Data not found — auto delete 10s
-      await sendTemp(chatId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: \`${clean}\`\n⚠️  Koi record nahi mila`, 10000);
+      // DATA NAHI MILA — reply me not found, 15 sec baad dono delete
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: \`${clean}\`\n⚠️  Koi record nahi mila`
+      );
       return;
     }
+
+    // DATA MILA — reply me data, kuch delete nahi
     let full = formatNumResult(records, clean);
     const deep = formatDeepData(deepData);
     if (deep) full += "\n\n" + deep;
-    await sendMessage(chatId, full);
+    await sendDataFound(chatId, userMsgId, full);
+
   } catch (e) {
     console.error("[NUM LOOKUP]", e);
+    await deleteMessage(chatId, statusMsg.message_id);
     await sendMessage(chatId, "❌  API Error / Timeout.");
-    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
 async function handleTg(chatId, term, userMsgId = null) {
-  // User ka command message delete karo
-  if (userMsgId) deleteMessage(chatId, userMsgId);
-
   term = term.trim().replace(/^@/,"");
-  if (!term) { await sendTemp(chatId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438", 10000); return; }
+  if (!term) {
+    await sendDataNotFound(chatId, userMsgId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438");
+    return;
+  }
 
   const termKey = term.toLowerCase();
-  if (customTgData[termKey]) { await sendMessage(chatId, customTgData[termKey]); return; }
+  if (customTgData[termKey]) {
+    // Custom data — reply me bhejo, delete nahi
+    await sendDataFound(chatId, userMsgId, customTgData[termKey]);
+    return;
+  }
 
-  const isUserId = /^\d+$/.test(term);
+  const isUserId  = /^\d+$/.test(term);
   const statusMsg = await sendMessage(chatId, `🔍  Searching TG ${isUserId ? "UserID" : "Username"}: ${isUserId ? "#" : "@"}${term} ...`);
   let tgId = "N/A", targetUname = term, phone = null, countryCode = null, usedFallback = false;
+
   try {
     const url = isUserId ? TG_USERID_API.replace("{userid}", term) : TG_USERNAME_API.replace("{username}", term);
     const res  = await fetch(url, { signal: AbortSignal.timeout(20000) });
@@ -558,11 +576,18 @@ async function handleTg(chatId, term, userMsgId = null) {
       const fb = await fetchTgFallback(term);
       if (fb.phone) { usedFallback = true; phone = fb.phone; countryCode = fb.countryCode || countryCode; if (fb.tgId && fb.tgId !== "N/A") tgId = fb.tgId; }
     }
+
     await deleteMessage(chatId, statusMsg.message_id);
+
     if (!phone && tgId === "N/A") {
-      await sendTemp(chatId, `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Dono APIs se data nahi mila\n╚══════════════════════╝`, 10000);
+      // DATA NAHI MILA
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Dono APIs se data nahi mila\n╚══════════════════════╝`
+      );
       return;
     }
+
+    // DATA MILA — reply me bhejo
     const srcLabel = usedFallback ? "🔁 Fallback" : "✅ Primary";
     const uDisplay = /^\d+$/.test(targetUname) ? targetUname : `@${targetUname}`;
     let tgBlock = `┌─────────────────────────┐\n│  🔎  T G   L O O K U P  │\n├─────────────────────────┤\n${cb("💻 Username    ",uDisplay)}\n${cb("🆔 Telegram ID ",tgId)}\n${cb("📞 Phone       ",phone||"N/A")}\n${cb("🌍 Country Code",countryCode||"N/A")}\n🔌  Source       : ${srcLabel}\n└─────────────────────────┘\n`;
@@ -573,67 +598,86 @@ async function handleTg(chatId, term, userMsgId = null) {
       if (numRes.length) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
       if (deepRes.length) { const df = formatDeepData(deepRes); if (df) tgBlock += "\n\n" + df; }
     }
-    await sendMessage(chatId, tgBlock);
+    await sendDataFound(chatId, userMsgId, tgBlock);
+
   } catch (e) {
     console.error("[TG LOOKUP]", e);
+    await deleteMessage(chatId, statusMsg.message_id);
     await sendMessage(chatId, "❌  Kuch gadbad ho gayi.");
-    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
 async function handleAdhar(chatId, adharRaw, userMsgId = null) {
-  if (userMsgId) deleteMessage(chatId, userMsgId);
   const statusMsg = await sendMessage(chatId, `🔍  Searching Aadhaar: \`${adharRaw}\` ...`);
   try {
     const res  = await fetch(ADHAR_API_URL.replace("{number}", adharRaw), { signal: AbortSignal.timeout(15000) });
     const data = await res.json();
     await deleteMessage(chatId, statusMsg.message_id);
+
     const resultObj   = data.result || {};
     const resultsList = resultObj.results || [];
     if (!data.success && !resultObj.success && !resultsList.length) {
-      await sendTemp(chatId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: \`${adharRaw}\``, 10000);
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: \`${adharRaw}\``
+      );
       return;
     }
     const formatted = formatAdharResult(data, adharRaw);
-    if (!formatted) { await sendTemp(chatId, `❌  Data format error — Aadhaar: \`${adharRaw}\``, 10000); return; }
-    await sendMessage(chatId, formatted);
+    if (!formatted) {
+      await sendDataNotFound(chatId, userMsgId, `❌  Data format error — Aadhaar: \`${adharRaw}\``);
+      return;
+    }
+    await sendDataFound(chatId, userMsgId, formatted);
+
   } catch (e) {
     console.error("[ADHAR]", e);
+    await deleteMessage(chatId, statusMsg.message_id);
     await sendMessage(chatId, "❌  API Error / Timeout.");
-    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
 async function handleUpi(chatId, upiId, userMsgId = null) {
-  if (userMsgId) deleteMessage(chatId, userMsgId);
   const statusMsg = await sendMessage(chatId, `🔍  Searching UPI: \`${upiId}\` ...`);
   try {
     const res  = await fetch(UPI_API_URL.replace("{upi}", upiId.trim()), { signal: AbortSignal.timeout(15000) });
     const data = await res.json();
     await deleteMessage(chatId, statusMsg.message_id);
-    if (!data.success) { await sendTemp(chatId, `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: \`${upiId}\``, 10000); return; }
-    await sendMessage(chatId, formatUpiResult(data, upiId));
+
+    if (!data.success) {
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: \`${upiId}\``
+      );
+      return;
+    }
+    await sendDataFound(chatId, userMsgId, formatUpiResult(data, upiId));
+
   } catch (e) {
     console.error("[UPI]", e);
+    await deleteMessage(chatId, statusMsg.message_id);
     await sendMessage(chatId, "❌  API Error / Timeout.");
-    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
 async function handleVehicle(chatId, vehicleNo, userMsgId = null) {
-  if (userMsgId) deleteMessage(chatId, userMsgId);
   vehicleNo = vehicleNo.trim().toUpperCase().replace(/\s/g,"");
   const statusMsg = await sendMessage(chatId, `🔍  Searching Vehicle: \`${vehicleNo}\` ...`);
   try {
     const res  = await fetch(VEHICLE_API_URL.replace("{vehicle}", vehicleNo), { signal: AbortSignal.timeout(20000) });
     const data = await res.json();
     await deleteMessage(chatId, statusMsg.message_id);
-    if (!data.success) { await sendTemp(chatId, `╔══════════════════════╗\n║  ❌ VEHICLE NOT FOUND  ║\n╚══════════════════════╝\n🚗  Vehicle: \`${vehicleNo}\``, 10000); return; }
-    await sendMessage(chatId, formatVehicleResult(data));
+
+    if (!data.success) {
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════════╗\n║  ❌ VEHICLE NOT FOUND  ║\n╚══════════════════════╝\n🚗  Vehicle: \`${vehicleNo}\``
+      );
+      return;
+    }
+    await sendDataFound(chatId, userMsgId, formatVehicleResult(data));
+
   } catch (e) {
     console.error("[VEHICLE]", e);
+    await deleteMessage(chatId, statusMsg.message_id);
     await sendMessage(chatId, "❌  API Error / Timeout.");
-    deleteMessage(chatId, statusMsg.message_id);
   }
 }
 
@@ -641,27 +685,24 @@ async function handleVehicle(chatId, vehicleNo, userMsgId = null) {
 async function handleUpdate(update) {
   try {
     if (update.callback_query) return await handleCallback(update.callback_query);
-
     const msg = update.message || update.edited_message;
     if (!msg) return;
     const from    = msg.from;
     if (!from || from.is_bot) return;
     const chatId  = msg.chat.id;
-    const msgId   = msg.message_id;  // user ka message id — reply ke liye
+    const msgId   = msg.message_id;
     const text    = (msg.text || "").trim();
     const _isAdmin= isAdmin(from.username);
 
     dbSaveUser(from);
     if (!text) return;
 
-    // Admin text commands
     if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin","/setcustomtg","/delcustomtg","/listcustomtg","/dbbackup"].some(c => text.toLowerCase().startsWith(c))) {
       return await handleAdminText(chatId, from.id, text, _isAdmin);
     }
 
-    // Per-user state machine
     const choice = userState[from.id];
-    if (!choice) return; // silent ignore
+    if (!choice) return;
 
     if (!_isAdmin && !(await checkJoin(from.id))) {
       await sendJoinPrompt(chatId);
@@ -681,7 +722,6 @@ async function handleUpdate(update) {
       await editMessageText(chatId, status.message_id,
         `╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}`);
     }
-    // FIX: msgId pass karo taaki user ka message delete ho aur reply mile
     else if (choice === "number")  { await handleNumber(chatId, text, msgId); }
     else if (choice === "tg")      { await handleTg(chatId, text, msgId); }
     else if (choice === "adhar")   { await handleAdhar(chatId, text, msgId); }
@@ -748,27 +788,15 @@ async function handleCallback(cb) {
 
   if (!_isAdmin) return;
 
-  if (data === "menu_users") {
-    const count = await dbUserCount();
-    await sendMessage(chatId, `╔══════════════════╗\n║  👥 USER COUNT   ║\n╚══════════════════╝\n📊  Total: \`${count}\`\n🗄️  Source: MongoDB`);
-    return;
-  }
+  if (data === "menu_users") { const count = await dbUserCount(); await sendMessage(chatId, `╔══════════════════╗\n║  👥 USER COUNT   ║\n╚══════════════════╝\n📊  Total: \`${count}\`\n🗄️  Source: MongoDB`); return; }
   if (data === "menu_dbbackup")   { await sendDbBackup(chatId); return; }
   if (data === "menu_adminlist")  { await sendMessage(chatId, `╔══════════════════╗\n║  📋 ADMIN LIST   ║\n╚══════════════════╝\n` + admins.map(a=>`• ${a}`).join("\n")); return; }
   if (data === "menu_adminpanel") {
-    await sendMessage(chatId,
-      "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
-      "📢  /broadcast <msg>\n👥  /users\n➕  /addadmin @user\n➖  /removeadmin @user\n" +
-      "📋  /listadmins\n✏️  /setcustomtg @user <data>\n🗑️  /delcustomtg @user\n📋  /listcustomtg\n🗄️  /dbbackup\n" +
-      "╚══════════════════════════╝");
+    await sendMessage(chatId, "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n📢  /broadcast <msg>\n👥  /users\n➕  /addadmin @user\n➖  /removeadmin @user\n📋  /listadmins\n✏️  /setcustomtg @user <data>\n🗑️  /delcustomtg @user\n📋  /listcustomtg\n🗄️  /dbbackup\n╚══════════════════════════╝");
     return;
   }
-  if (data === "menu_broadcast")    { userState[from.id] = "broadcast"; await sendMessage(chatId, "📢  Broadcast message type karo:"); return; }
-  if (data === "menu_setcustomtg")  {
-    userState[from.id] = "setcustomtg_step1";
-    await sendMessage(chatId, "╔══════════════════════════╗\n║  ✏️  SET CUSTOM TG DATA   ║\n╠══════════════════════════╣\n📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming\n╚══════════════════════════╝");
-    return;
-  }
+  if (data === "menu_broadcast")   { userState[from.id] = "broadcast"; await sendMessage(chatId, "📢  Broadcast message type karo:"); return; }
+  if (data === "menu_setcustomtg") { userState[from.id] = "setcustomtg_step1"; await sendMessage(chatId, "╔══════════════════════════╗\n║  ✏️  SET CUSTOM TG DATA   ║\n╠══════════════════════════╣\n📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming\n╚══════════════════════════╝"); return; }
 }
 
 async function handleAdminText(chatId, userId, text, _isAdmin) {
@@ -776,25 +804,16 @@ async function handleAdminText(chatId, userId, text, _isAdmin) {
   const lower = text.toLowerCase();
 
   if (lower === "/admin") {
-    await sendMessage(chatId,
-      "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
-      "📢  /broadcast <msg>\n👥  /users\n➕  /addadmin @user\n➖  /removeadmin @user\n" +
-      "📋  /listadmins\n✏️  /setcustomtg @user <data>\n🗑️  /delcustomtg @user\n📋  /listcustomtg\n🗄️  /dbbackup\n" +
-      "╚══════════════════════════╝");
+    await sendMessage(chatId, "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n📢  /broadcast <msg>\n👥  /users\n➕  /addadmin @user\n➖  /removeadmin @user\n📋  /listadmins\n✏️  /setcustomtg @user <data>\n🗑️  /delcustomtg @user\n📋  /listcustomtg\n🗄️  /dbbackup\n╚══════════════════════════╝");
     return;
   }
   if (lower.startsWith("/broadcast")) {
     const msgText = text.slice("/broadcast".length).trim();
     if (!msgText) { await sendMessage(chatId, "❌  Usage: /broadcast <message>"); return; }
-    const users = await dbGetAllUsers();
-    const uids  = users.map(u => u.user_id);
-    const status= await sendMessage(chatId, `📤  Broadcasting to ${uids.length} users...`);
+    const users = await dbGetAllUsers(); const uids = users.map(u => u.user_id);
+    const status = await sendMessage(chatId, `📤  Broadcasting to ${uids.length} users...`);
     let ok = 0, fail = 0;
-    for (const uid of uids) {
-      const r = await tgApi("sendMessage", { chat_id: uid, text: msgText });
-      r ? ok++ : fail++;
-      await new Promise(r => setTimeout(r, 50));
-    }
+    for (const uid of uids) { const r = await tgApi("sendMessage", { chat_id: uid, text: msgText }); r ? ok++ : fail++; await new Promise(r => setTimeout(r, 50)); }
     await editMessageText(chatId, status.message_id, `✅ Delivered: ${ok}\n❌ Failed: ${fail}\n👥 Total: ${uids.length}`);
     return;
   }
@@ -804,20 +823,17 @@ async function handleAdminText(chatId, userId, text, _isAdmin) {
     const parts = text.trim().split(/\s+/);
     if (parts.length < 2) { await sendMessage(chatId, "❌  Usage: /addadmin @username"); return; }
     const newAdmin = parts[1].startsWith("@") ? parts[1] : `@${parts[1]}`;
-    if (!admins.map(a=>a.toLowerCase()).includes(newAdmin.toLowerCase())) {
-      admins.push(newAdmin); await sendMessage(chatId, `✅  ${newAdmin} ko admin bana diya!`);
-    } else { await sendMessage(chatId, `⚠️  ${newAdmin} pehle se admin hai.`); }
+    if (!admins.map(a=>a.toLowerCase()).includes(newAdmin.toLowerCase())) { admins.push(newAdmin); await sendMessage(chatId, `✅  ${newAdmin} ko admin bana diya!`); }
+    else { await sendMessage(chatId, `⚠️  ${newAdmin} pehle se admin hai.`); }
     return;
   }
   if (lower.startsWith("/removeadmin")) {
     const parts = text.trim().split(/\s+/);
     if (parts.length < 2) { await sendMessage(chatId, "❌  Usage: /removeadmin @username"); return; }
-    const rem   = parts[1].startsWith("@") ? parts[1] : `@${parts[1]}`;
+    const rem = parts[1].startsWith("@") ? parts[1] : `@${parts[1]}`;
     const match = admins.find(a => a.toLowerCase() === rem.toLowerCase());
-    if (match && match.toLowerCase() !== "@rtfgamming") {
-      admins = admins.filter(a => a.toLowerCase() !== rem.toLowerCase());
-      await sendMessage(chatId, `✅  ${rem} ko hata diya.`);
-    } else if (match) { await sendMessage(chatId, "❌  Owner ko remove nahi kar sakte!"); }
+    if (match && match.toLowerCase() !== "@rtfgamming") { admins = admins.filter(a => a.toLowerCase() !== rem.toLowerCase()); await sendMessage(chatId, `✅  ${rem} ko hata diya.`); }
+    else if (match) { await sendMessage(chatId, "❌  Owner ko remove nahi kar sakte!"); }
     else { await sendMessage(chatId, `⚠️  ${rem} list me nahi hai.`); }
     return;
   }
@@ -848,7 +864,6 @@ async function handleAdminText(chatId, userId, text, _isAdmin) {
     await sendMessage(chatId, lines.join("\n"));
     return;
   }
-  // Command-based lookups from admin
   const match = text.match(/^\/(\w+)\s+([\s\S]+)$/);
   if (!match) return;
   const [, cmd, args] = match;
@@ -864,7 +879,7 @@ async function handleCommand(msg) {
   const from   = msg.from;
   if (!from || from.is_bot) return;
   const chatId = msg.chat.id;
-  const msgId  = msg.message_id;  // command message ka id
+  const msgId  = msg.message_id;   // ← user ka command message id — reply + delete ke liye
   const text   = (msg.text || "").trim();
   const _isAdm = isAdmin(from.username);
 
@@ -884,20 +899,20 @@ async function handleCommand(msg) {
   } else if (cmd === "help") {
     await sendMessage(chatId, HELP_TEXT);
   } else if (cmd === "num") {
-    if (!args) { await sendMessage(chatId, "❌  Usage: /num <number>\n📌  Example: /num 9876543210"); return; }
-    await handleNumber(chatId, args, msgId);  // msgId pass karo
+    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /num <number>\n📌  Example: /num 9876543210"); return; }
+    await handleNumber(chatId, args.trim(), msgId);
   } else if (cmd === "tg") {
-    if (!args) { await sendMessage(chatId, "❌  Usage: /tg <username ya userid>\n📌 /tg rtfgamming\n📌 /tg 8518042438"); return; }
-    await handleTg(chatId, args, msgId);
+    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /tg <username ya userid>\n📌 /tg rtfgamming\n📌 /tg 8518042438"); return; }
+    await handleTg(chatId, args.trim(), msgId);
   } else if (cmd === "adhar") {
-    if (!args) { await sendMessage(chatId, "❌  Usage: /adhar <aadhaar_number>\n📌 Example: /adhar 598229659586"); return; }
+    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /adhar <aadhaar_number>\n📌 Example: /adhar 598229659586"); return; }
     await handleAdhar(chatId, args.trim(), msgId);
   } else if (cmd === "upi") {
-    if (!args) { await sendMessage(chatId, "❌  Usage: /upi <upi_id>\n📌 Example: /upi 70497398@axl"); return; }
-    await handleUpi(chatId, args, msgId);
+    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /upi <upi_id>\n📌 Example: /upi 70497398@axl"); return; }
+    await handleUpi(chatId, args.trim(), msgId);
   } else if (cmd === "vehicle") {
-    if (!args) { await sendMessage(chatId, "❌  Usage: /vehicle <reg_number>\n📌 Example: /vehicle MH02FZ0555"); return; }
-    await handleVehicle(chatId, args, msgId);
+    if (!args.trim()) { await sendMessage(chatId, "❌  Usage: /vehicle <reg_number>\n📌 Example: /vehicle MH02FZ0555"); return; }
+    await handleVehicle(chatId, args.trim(), msgId);
   } else if (_isAdm) {
     await handleAdminText(chatId, from.id, text, true);
   }
@@ -941,4 +956,3 @@ async function start() {
 }
 
 start();
-
