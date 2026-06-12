@@ -18,8 +18,8 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
 const OWNER       = "@RTFGAMMING";
 
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
-const SECOND_API_URL  = "https://surya.suryahacker.workers.dev/?query={number}";
-const ADHAR_API_URL   = "https://surya.suryahacker.workers.dev/?query={number}";
+const SECOND_API_URL  = "https://all-leak-check-api.vercel.app/api/search?query={number}";
+const ADHAR_API_URL   = "https://all-leak-check-api.vercel.app/api/search?query={number}";
 const TG_USERNAME_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
 const TG_USERID_API   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
 const TG_FALLBACK_API = "https://krish-osintoy.lovable.app/api/v1/tg?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&info={query}";
