@@ -851,7 +851,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
   }
 
   if (!apiToggle.tg_primary && !apiToggle.tg_fallback) {
-    await sendDataNotFound(chatId, userMsgId, "╔══════════════════════╗\n║  ⚠️  APIs DISABLED    ║\n╠══════════════════════╣\nDono TG APIs off hain.\nAdmin se contact karo.\n╚══════════════════════╝");
+    await sendDataNotFound(chatId, userMsgId, "╔══════════════════════╗\n║  ⚠️  APIs DISABLED    ║\n╠══════════════════════╣\n. @RTFGMINGGC \nIS LINK KO COPY KRKE 4000 MEMBERS COMPLETE KRO FIR TG TO NUM ON HO JAYEGA.\n╚══════════════════════╝");
     return;
   }
 
