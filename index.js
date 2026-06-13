@@ -20,7 +20,7 @@ const OWNER       = "@RTFGAMMING";
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
 // ── NEW DEEP API ── (old surya api replaced)
 const DEEP_API_URL    = "https://api.fbi.gov.in/?query={number}";
-const ADHAR_API_URL   = "https://surya.suryahacker.workers.dev/?query={number}";
+const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
 const TG_USERNAME_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=3c7c79ee5d09e54d714c6cf960017b62";
 const TG_USERID_API   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=3c7c79ee5d09e54d714c6cf960017b62";
 const TG_FALLBACK_API = "https://krish-osintoy.lovable.app/api/v1/tg?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&info={query}";
