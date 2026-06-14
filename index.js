@@ -17,12 +17,12 @@ const PORT        = process.env.PORT        || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
 const OWNER       = "@RTFGAMMING";
 
+// ── API URLs ──────────────────────────────────
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
-// ── NEW DEEP API ── (old surya api replaced)
 const DEEP_API_URL    = "https://api.fbi.gov.in/?query={number}";
 const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
-const TG_USERNAME_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
-const TG_USERID_API   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
+const TG_USERNAME_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=3c7c79ee5d09e54d714c6cf960017b62";
+const TG_USERID_API   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=3c7c79ee5d09e54d714c6cf960017b62";
 const TG_FALLBACK_API = "https://krish-osintoy.lovable.app/api/v1/tg?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&info={query}";
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
@@ -39,10 +39,48 @@ let admins         = ["@rtfgamming"];
 const userState    = new Map();
 const customTgData = new Map();
 
-// ── API TOGGLE STATE ──────────────────────────
+// ══════════════════════════════════════════════
+//  API TOGGLE SYSTEM
+//  Har API ke liye:
+//    enabled: on/off
+//    offMsg:  admin ka custom message jab API off ho
+// ══════════════════════════════════════════════
 const apiToggle = {
-  tg_primary:  true,
-  tg_fallback: true,
+  num: {
+    enabled: true,
+    label:   "📞 Number API",
+    offMsg:  "❌ Number lookup abhi available nahi hai. Thodi der baad try karo.",
+  },
+  deep: {
+    enabled: true,
+    label:   "🔬 Deep Intel API",
+    offMsg:  "❌ Deep data lookup abhi available nahi hai.",
+  },
+  tg_primary: {
+    enabled: true,
+    label:   "🔎 TG Primary API",
+    offMsg:  "❌ TG lookup abhi available nahi hai. Fallback try kar raha hai...",
+  },
+  tg_fallback: {
+    enabled: true,
+    label:   "🔎 TG Fallback API",
+    offMsg:  "❌ TG fallback bhi abhi available nahi hai.",
+  },
+  adhar: {
+    enabled: true,
+    label:   "🪪 Aadhaar API",
+    offMsg:  "❌ Aadhaar lookup abhi available nahi hai. Thodi der baad try karo.",
+  },
+  upi: {
+    enabled: true,
+    label:   "💳 UPI API",
+    offMsg:  "❌ UPI lookup abhi available nahi hai.",
+  },
+  vehicle: {
+    enabled: true,
+    label:   "🚗 Vehicle API",
+    offMsg:  "❌ Vehicle lookup abhi available nahi hai.",
+  },
 };
 
 // ── CONCURRENCY CONTROL ───────────────────────
@@ -63,9 +101,7 @@ async function initDb() {
   try {
     mongoClient = new MongoClient(MONGO_URI, {
       maxPoolSize: 100, minPoolSize: 10,
-      serverSelectionTimeoutMS: 8000,
-      connectTimeoutMS: 8000,
-      socketTimeoutMS: 30000,
+      serverSelectionTimeoutMS: 8000, connectTimeoutMS: 8000, socketTimeoutMS: 30000,
     });
     await mongoClient.connect();
     db       = mongoClient.db("rtfbot");
@@ -77,55 +113,35 @@ async function initDb() {
   } catch (e) { console.error("[DB ERROR]", e.message); mongoClient = null; }
 }
 
-// ── DB: Save user (non-blocking) ─────────────
 function dbSaveUser(from) {
   if (!usersCol) return;
   const now = new Date().toISOString();
   usersCol.updateOne(
     { user_id: from.id },
     {
-      $set: {
-        user_id:    from.id,
-        username:   from.username   || "",
-        name:       [from.first_name, from.last_name].filter(Boolean).join(" "),
-        first_name: from.first_name || "",
-        last_name:  from.last_name  || "",
-        last_seen:  now,
-      },
-      $setOnInsert: {
-        first_seen:    now,
-        total_searches: 0,       // ← new users start at 0
-      }
+      $set: { user_id: from.id, username: from.username||"", name: [from.first_name, from.last_name].filter(Boolean).join(" "), first_name: from.first_name||"", last_name: from.last_name||"", last_seen: now },
+      $setOnInsert: { first_seen: now, total_searches: 0 }
     },
     { upsert: true }
   ).catch(e => console.error("[DB SAVE USER]", e.message));
 }
 
-// ── DB: Increment search count ────────────────
-// Purana data kuch nahi hoga — sirf $inc karta hai
-// Agar field exist nahi karti tab bhi $inc usse 1 se shuru karega
 function dbIncrSearch(userId) {
   if (!usersCol) return;
-  usersCol.updateOne(
-    { user_id: userId },
-    { $inc: { total_searches: 1 } }
-  ).catch(e => console.error("[DB INCR SEARCH]", e.message));
+  usersCol.updateOne({ user_id: userId }, { $inc: { total_searches: 1 } })
+    .catch(e => console.error("[DB INCR SEARCH]", e.message));
 }
 
 async function dbSaveData(key, value) {
   if (!dataCol) return;
-  dataCol.updateOne(
-    { key },
-    { $set: { key, value, updated_at: new Date().toISOString() } },
-    { upsert: true }
-  ).catch(e => console.error("[DB SAVE DATA]", e.message));
+  dataCol.updateOne({ key }, { $set: { key, value, updated_at: new Date().toISOString() } }, { upsert: true })
+    .catch(e => console.error("[DB SAVE DATA]", e.message));
 }
 
 async function dbGetAllUsers() {
   if (!usersCol) return [];
-  try {
-    return await usersCol.find({}, { projection: { _id: 0 } }).toArray();
-  } catch (e) { console.error("[DB GET USERS]", e.message); return []; }
+  try { return await usersCol.find({}, { projection: { _id: 0 } }).toArray(); }
+  catch (e) { console.error("[DB GET USERS]", e.message); return []; }
 }
 
 async function dbUserCount() {
@@ -137,55 +153,37 @@ async function dbUserCount() {
 const TG_BASE    = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const httpAgent  = new http.Agent ({ keepAlive: true, maxSockets: 200 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 200 });
-function agentFor(url) {
-  return url.startsWith("https") ? { agent: httpsAgent } : { agent: httpAgent };
-}
+function agentFor(url) { return url.startsWith("https") ? { agent: httpsAgent } : { agent: httpAgent }; }
 
 async function tgApi(method, body = {}) {
   try {
-    const res  = await fetch(`${TG_BASE}/${method}`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(body),
-      signal:  AbortSignal.timeout(10000),
-      ...agentFor(TG_BASE),
-    });
+    const res  = await fetch(`${TG_BASE}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000), ...agentFor(TG_BASE) });
     const json = await res.json();
     if (!json.ok) { console.error(`[TG ${method}]`, json.description); return null; }
     return json.result;
   } catch (e) { console.error(`[TG ${method}]`, e.message); return null; }
 }
 
-// ── MarkdownV2 escape ─────────────────────────
-// Underscore, asterisk, dot etc sab escape — URZ_009 type usernames fix
 function escMd(text) {
   if (text == null) return "";
   return String(text).replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");
 }
-
 function cbMd(label, value) {
   const v = (value != null ? String(value).trim() : "");
-  if (v && !["N/A","","None","null","nan"].includes(v))
+  if (v && !["N/A","","None","null","nan","undefined"].includes(v))
     return `${escMd(label)}: \`${escMd(v)}\``;
   return `${escMd(label)}: ❌ N/A`;
 }
 
-// ── Message senders ───────────────────────────
-const sendMessage     = (chat_id, text, extra = {}) =>
-  tgApi("sendMessage", { chat_id, text, parse_mode: "MarkdownV2", disable_web_page_preview: true, ...extra });
-const editMessageText = (chat_id, message_id, text, extra = {}) =>
-  tgApi("editMessageText", { chat_id, message_id, text, parse_mode: "MarkdownV2", disable_web_page_preview: true, ...extra });
+const sendMessage     = (chat_id, text, extra = {}) => tgApi("sendMessage",     { chat_id, text, parse_mode: "MarkdownV2", disable_web_page_preview: true, ...extra });
+const editMessageText = (chat_id, message_id, text, extra = {}) => tgApi("editMessageText", { chat_id, message_id, text, parse_mode: "MarkdownV2", disable_web_page_preview: true, ...extra });
 const deleteMessage   = (chat_id, message_id) => tgApi("deleteMessage", { chat_id, message_id });
-const answerCallback  = (callback_query_id, text = "", show_alert = false) =>
-  tgApi("answerCallbackQuery", { callback_query_id, text, show_alert });
+const answerCallback  = (callback_query_id, text = "", show_alert = false) => tgApi("answerCallbackQuery", { callback_query_id, text, show_alert });
 const getChatMember   = (chat_id, user_id) => tgApi("getChatMember", { chat_id, user_id });
-const setMyCommands   = (commands)          => tgApi("setMyCommands", { commands });
-const setWebhook      = (url)               => tgApi("setWebhook",    { url, drop_pending_updates: true });
-// Plain — no markdown (safe for unknown content)
-const sendPlain = (chat_id, text, extra = {}) =>
-  tgApi("sendMessage", { chat_id, text, disable_web_page_preview: true, ...extra });
+const setMyCommands   = (commands) => tgApi("setMyCommands", { commands });
+const setWebhook      = (url)      => tgApi("setWebhook",    { url, drop_pending_updates: true });
+const sendPlain = (chat_id, text, extra = {}) => tgApi("sendMessage", { chat_id, text, disable_web_page_preview: true, ...extra });
 
-// ── sendData helpers ──────────────────────────
 async function sendDataNotFound(chatId, userMsgId, notFoundText) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
   const notFoundMsg = await sendPlain(chatId, notFoundText, extra);
@@ -199,7 +197,6 @@ async function sendDataFound(chatId, userMsgId, text) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
   const res = await sendMessage(chatId, text, extra);
   if (!res) {
-    // Fallback: strip markdown, send plain
     const plain = text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "");
     await sendPlain(chatId, plain, extra);
   }
@@ -207,7 +204,7 @@ async function sendDataFound(chatId, userMsgId, text) {
 }
 
 // ── JOIN CHECK ────────────────────────────────
-const joinCache     = new Map();
+const joinCache = new Map();
 const JOIN_CACHE_TTL = 60_000;
 
 async function getNotJoinedChannels(userId) {
@@ -227,10 +224,7 @@ async function checkJoin(userId) {
   const missing = await getNotJoinedChannels(userId);
   const ok = missing.length === 0;
   joinCache.set(userId, { ok, ts: Date.now() });
-  if (joinCache.size > 5000) {
-    const cutoff = Date.now() - JOIN_CACHE_TTL;
-    for (const [k,v] of joinCache) { if (v.ts < cutoff) joinCache.delete(k); }
-  }
+  if (joinCache.size > 5000) { const c = Date.now() - JOIN_CACHE_TTL; for (const [k,v] of joinCache) { if (v.ts < c) joinCache.delete(k); } }
   return ok;
 }
 
@@ -243,44 +237,24 @@ async function sendJoinPrompt(chatId) {
   if (!missing.length) return false;
   const buttons = missing.map(ch => [{ text: `➕ ${ch.name}`, url: `https://t.me/${ch.username}` }]);
   buttons.push([{ text: "✅ VERIFY JOIN", callback_data: "verify" }]);
-  await sendPlain(chatId,
-    "╔════════════════════════╗\n║  🔒  ACCESS LOCKED  🔒  ║\n╠════════════════════════╣\n📢  Sabhi channels JOIN karo\n⚡  Phir ✅ VERIFY dabao\n╚════════════════════════╝",
-    { reply_markup: { inline_keyboard: buttons } }
-  );
+  await sendPlain(chatId, "╔════════════════════════╗\n║  🔒  ACCESS LOCKED  🔒  ║\n╠════════════════════════╣\n📢  Sabhi channels JOIN karo\n⚡  Phir ✅ VERIFY dabao\n╚════════════════════════╝", { reply_markup: { inline_keyboard: buttons } });
   return true;
 }
 
 // ── MENUS ─────────────────────────────────────
 const MAIN_MENU_TEXT =
-  "╔══════════════════════════╗\n" +
-  "║  ⚡️  R T F   B O T  ⚡️   ║\n" +
-  "╠══════════════════════════╣\n" +
-  "🟢  Status  : ONLINE\n" +
-  "👑  Owner   : @RTFGAMMING\n" +
-  "🔥  Version : v3.0\n" +
-  "╠══════════════════════════╣\n" +
-  "📌  Neeche se option chuno:\n" +
-  "╚══════════════════════════╝";
+  "╔══════════════════════════╗\n║  ⚡️  R T F   B O T  ⚡️   ║\n╠══════════════════════════╣\n" +
+  "🟢  Status  : ONLINE\n👑  Owner   : @RTFGAMMING\n🔥  Version : v3.0\n" +
+  "╠══════════════════════════╣\n📌  Neeche se option chuno:\n╚══════════════════════════╝";
 
 const HELP_TEXT =
-  "╔══════════════════════════╗\n" +
-  "║  📖  B O T   H E L P    ║\n" +
-  "╠══════════════════════════╣\n" +
-  "📞  /num <number>\n" +
-  "   Example: /num 9876543210\n\n" +
-  "🔎  /tg <username ya userid>\n" +
-  "   Example: /tg rtfgamming\n" +
-  "   Example: /tg 8518042438\n\n" +
-  "🪪  /adhar <aadhaar_no>\n" +
-  "   Example: /adhar 598229659586\n\n" +
-  "💳  /upi <upi_id>\n" +
-  "   Example: /upi 70497398@axl\n\n" +
-  "🚗  /vehicle <reg_number>\n" +
-  "   Example: /vehicle MH02FZ0555\n\n" +
-  "🏠 /start  ❓ /help\n" +
-  "╠══════════════════════════╣\n" +
-  "👑  Owner : @RTFGAMMING\n" +
-  "╚══════════════════════════╝";
+  "╔══════════════════════════╗\n║  📖  B O T   H E L P    ║\n╠══════════════════════════╣\n" +
+  "📞  /num <number>\n   Example: /num 9876543210\n\n" +
+  "🔎  /tg <username ya userid>\n   Example: /tg rtfgamming\n   Example: /tg 8518042438\n\n" +
+  "🪪  /adhar <aadhaar_no>\n   Example: /adhar 598229659586\n\n" +
+  "💳  /upi <upi_id>\n   Example: /upi 70497398@axl\n\n" +
+  "🚗  /vehicle <reg_number>\n   Example: /vehicle MH02FZ0555\n\n" +
+  "🏠 /start  ❓ /help\n╠══════════════════════════╣\n👑  Owner : @RTFGAMMING\n╚══════════════════════════╝";
 
 function mainMenuKb() {
   return { inline_keyboard: [
@@ -301,51 +275,52 @@ function adminMenuKb() {
     [{ text: "❓ Help", callback_data: "menu_help" }, { text: "👑 Owner", callback_data: "menu_owner" }],
     [{ text: "📢 Broadcast", callback_data: "menu_broadcast" }, { text: "👥 Users Count", callback_data: "menu_users" }],
     [{ text: "📋 Admin List", callback_data: "menu_adminlist" }, { text: "⚙️ Admin Panel", callback_data: "menu_adminpanel" }],
-    [{ text: "✏️ Set Custom TG Data", callback_data: "menu_setcustomtg" }],
-    [{ text: "🗄️ Database Backup", callback_data: "menu_dbbackup" }],
+    [{ text: "✏️ Set Custom TG", callback_data: "menu_setcustomtg" }],
+    [{ text: "🗄️ DB Backup", callback_data: "menu_dbbackup" }],
     [{ text: "🔌 API Manager", callback_data: "menu_api" }],
   ]};
 }
 
-// ── API MANAGER PANEL ─────────────────────────
+// ══════════════════════════════════════════════
+//  API MANAGER PANEL
+//  Har API ka toggle + custom off message
+// ══════════════════════════════════════════════
+const API_KEYS = ["num","deep","tg_primary","tg_fallback","adhar","upi","vehicle"];
+
 function apiManagerKb() {
-  const p1 = apiToggle.tg_primary  ? "🟢 ON" : "🔴 OFF";
-  const p2 = apiToggle.tg_fallback ? "🟢 ON" : "🔴 OFF";
-  return { inline_keyboard: [
-    [{ text: `🔌 TG Primary API — ${p1}`,  callback_data: "api_tog_primary"  }],
-    [{ text: `🔌 TG Fallback API — ${p2}`, callback_data: "api_tog_fallback" }],
-    [{ text: "🔙 Back", callback_data: "menu_adminpanel" }],
-  ]};
+  const rows = API_KEYS.map(k => {
+    const api = apiToggle[k];
+    const st  = api.enabled ? "🟢 ON" : "🔴 OFF";
+    return [
+      { text: `${st}  ${api.label}`, callback_data: `api_tog_${k}` },
+      { text: "✏️ Msg", callback_data: `api_msg_${k}` },
+    ];
+  });
+  rows.push([{ text: "🔙 Back", callback_data: "menu_adminpanel" }]);
+  return { inline_keyboard: rows };
 }
 
 function apiManagerText() {
-  const p1 = apiToggle.tg_primary  ? "🟢 ACTIVE" : "🔴 DISABLED";
-  const p2 = apiToggle.tg_fallback ? "🟢 ACTIVE" : "🔴 DISABLED";
-  return (
-    "╔══════════════════════════╗\n" +
-    "║  🔌  TG API MANAGER      ║\n" +
-    "╠══════════════════════════╣\n" +
-    "TG Primary API\n" +
-    "   URL: username-usrid-to-num.onrender.com\n" +
-    `   Status: ${p1}\n\n` +
-    "TG Fallback API\n" +
-    "   URL: krish-osintoy.lovable.app\n" +
-    `   Status: ${p2}\n\n` +
-    "Button dabao toggle karne ke liye:\n" +
-    "╚══════════════════════════╝"
-  );
+  let text = "╔══════════════════════════╗\n║  🔌  API MANAGER          ║\n╠══════════════════════════╣\n\n";
+  for (const k of API_KEYS) {
+    const api = apiToggle[k];
+    const st  = api.enabled ? "🟢 ON " : "🔴 OFF";
+    text += `${st}  ${api.label}\n`;
+    if (!api.enabled) text += `      💬 "${api.offMsg.slice(0,40)}..."\n`;
+    text += "\n";
+  }
+  text += "Toggle = ON/OFF\n✏️ Msg = Custom message set karo\n╚══════════════════════════╝";
+  return text;
 }
 
 // ══════════════════════════════════════════════
-//  FORMAT HELPERS (MarkdownV2 safe)
+//  FORMAT HELPERS
 // ══════════════════════════════════════════════
 
 function extractRecords(data) {
   const records = [];
   try {
-    const results = (data && typeof data === "object" && !Array.isArray(data))
-      ? (data.result || [])
-      : (data || []);
+    const results = (data && typeof data === "object" && !Array.isArray(data)) ? (data.result || []) : (data || []);
     for (const r of (Array.isArray(results) ? results : [])) {
       records.push({
         name:    (r.name    || "N/A").trim(),
@@ -364,21 +339,15 @@ function extractRecords(data) {
 function formatNumResult(records, number) {
   const colors = ["🔴","🟠","🟡","🟢","🔵"];
   let out =
-    `┌─────────────────────────┐\n` +
-    `│  📞  NUMBER INFO         │\n` +
-    `├─────────────────────────┤\n` +
-    `📱  Number  : \`${escMd(number)}\`\n` +
-    `📊  Records : ${Math.min(records.length,5)} found\n\n`;
+    `┌─────────────────────────┐\n│  📞  NUMBER INFO         │\n├─────────────────────────┤\n` +
+    `📱  Number  : \`${escMd(number)}\`\n📊  Records : ${Math.min(records.length,5)} found\n\n`;
   records.slice(0,5).forEach((r,i) => {
     const dot = colors[i % colors.length];
     out +=
       `${dot}━━━ RECORD ${i+1} ━━━${dot}\n` +
-      `${cbMd("👤 Name   ",r.name)}\n` +
-      `${cbMd("👨 Father ",r.fname)}\n` +
-      `${cbMd("📍 Address",r.address)}\n` +
-      `${cbMd("📡 Circle ",r.circle)}\n` +
-      `${cbMd("☎️  Alt Num",r.alt)}\n` +
-      `${cbMd("🪪 Aadhar ",r.aadhar)}\n` +
+      `${cbMd("👤 Name   ",r.name)}\n${cbMd("👨 Father ",r.fname)}\n` +
+      `${cbMd("📍 Address",r.address)}\n${cbMd("📡 Circle ",r.circle)}\n` +
+      `${cbMd("☎️  Alt Num",r.alt)}\n${cbMd("🪪 Aadhar ",r.aadhar)}\n` +
       `${cbMd("✉️  Email  ",r.email)}\n\n`;
   });
   out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
@@ -386,13 +355,12 @@ function formatNumResult(records, number) {
 }
 
 // ══════════════════════════════════════════════
-//  NEW DEEP API FORMAT
-//  Response: { result: { data: ["Mobile: ...", "Address: ...", ...] } }
-//  Data array me strings hain — parse karke attractive format me dikhao
+//  DEEP API PARSER + FORMATTER
+//  Input: full API response
+//  Response format: { result: { data: ["Mobile: ...", "Address: ..."] } }
 // ══════════════════════════════════════════════
 
 function parseDeepApiResponse(apiData) {
-  // apiData = full API response object
   try {
     if (!apiData || apiData.status !== "success") return null;
     const result = apiData.result;
@@ -400,21 +368,17 @@ function parseDeepApiResponse(apiData) {
     const dataArr = result.data;
     if (!Array.isArray(dataArr) || !dataArr.length) return null;
 
-    // Parse each line into key-value
     const parsed = {
-      mobiles:    [],
-      addresses:  [],
-      full_name:  null,
-      father:     null,
-      region:     null,
-      document:   null,
-      dob:        null,
-      facebook:   null,
-      name:       null,
-      surname:    null,
-      gender:     null,
-      country:    null,
-      others:     [],
+      mobiles:   [],
+      addresses: [],
+      full_name: null,
+      father:    null,
+      region:    null,
+      facebook:  null,
+      name:      null,
+      surname:   null,
+      gender:    null,
+      country:   null,
     };
 
     for (const line of dataArr) {
@@ -423,49 +387,36 @@ function parseDeepApiResponse(apiData) {
       if (sep === -1) continue;
       const key = line.slice(0, sep).trim().toLowerCase();
       const val = line.slice(sep + 1).trim();
-      if (!val || val === "" || val === "0001 12") continue;
+      if (!val || val === "" || val === "0001 12" || val === "null") continue;
 
-      if (key === "mobile") {
-        // Strip country code prefix for display
-        const mob = val.replace(/^91/, "");
-        if (mob && !parsed.mobiles.includes(val)) parsed.mobiles.push(val);
-      } else if (key === "address") {
-        if (!parsed.addresses.includes(val)) parsed.addresses.push(val);
-      } else if (key === "full name")    { parsed.full_name  = val; }
-      else if (key === "father name")    { parsed.father     = val; }
-      else if (key === "region")         { parsed.region     = val; }
-      else if (key === "document number"){ parsed.document   = val; }
-      else if (key === "date")           { parsed.dob        = val; }
-      else if (key === "facebookid")     { parsed.facebook   = val; }
-      else if (key === "name")           { parsed.name       = val; }
-      else if (key === "surname")        { parsed.surname    = val; }
-      else if (key === "gender")         { parsed.gender     = val; }
-      else if (key === "country")        { if (val) parsed.country = val; }
-      else { parsed.others.push({ key: line.slice(0,sep).trim(), val }); }
+      if      (key === "mobile")          { if (!parsed.mobiles.includes(val)) parsed.mobiles.push(val); }
+      else if (key === "address")         { if (!parsed.addresses.includes(val)) parsed.addresses.push(val); }
+      else if (key === "full name")       { if (!parsed.full_name) parsed.full_name = val; }
+      else if (key === "father name")     { if (!parsed.father) parsed.father = val; }
+      else if (key === "region")          { if (!parsed.region) parsed.region = val; }
+      else if (key === "facebookid")      { if (!parsed.facebook) parsed.facebook = val; }
+      else if (key === "name")            { if (!parsed.name) parsed.name = val; }
+      else if (key === "surname")         { if (!parsed.surname) parsed.surname = val; }
+      else if (key === "gender")          { if (!parsed.gender) parsed.gender = val; }
+      else if (key === "country")         { if (!parsed.country && val) parsed.country = val; }
     }
-
     return parsed;
-  } catch (e) {
-    console.error("[parseDeepApi]", e.message);
-    return null;
-  }
+  } catch (e) { console.error("[parseDeepApi]", e.message); return null; }
 }
 
-function formatDeepApiResult(parsed, queryNumber) {
+function formatDeepResult(parsed, queryNumber) {
   if (!parsed) return null;
-
-  // Check if anything meaningful exists
   const hasMeaningful = parsed.mobiles.length || parsed.addresses.length ||
     parsed.full_name || parsed.father || parsed.region;
   if (!hasMeaningful) return null;
 
   let text =
-    `┌─────────────────────────┐\n` +
-    `│  🔬  D E E P   I N T E L  │\n` +
-    `├─────────────────────────┤\n` +
+    `\n\n🔬━━━━━━━━━━━━━━━━━━━━━━━🔬\n` +
+    `│      D E E P   I N T E L      │\n` +
+    `🔬━━━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
 
-  // ── IDENTITY BLOCK ──
+  // Identity
   if (parsed.full_name || parsed.name || parsed.surname || parsed.father || parsed.gender) {
     text += `👤━━━ IDENTITY ━━━👤\n`;
     if (parsed.full_name) text += `${cbMd("🧑 Full Name  ", parsed.full_name)}\n`;
@@ -473,77 +424,106 @@ function formatDeepApiResult(parsed, queryNumber) {
       const nm = [parsed.name, parsed.surname].filter(Boolean).join(" ");
       text += `${cbMd("🏷️  Name      ", nm)}\n`;
     }
-    if (parsed.father)  text += `${cbMd("👨 Father    ", parsed.father)}\n`;
-    if (parsed.gender)  text += `${cbMd("⚧️  Gender    ", parsed.gender)}\n`;
+    if (parsed.father) text += `${cbMd("👨 Father    ", parsed.father)}\n`;
+    if (parsed.gender) text += `${cbMd("⚧️  Gender    ", parsed.gender)}\n`;
     text += "\n";
   }
 
-  // ── PHONE NUMBERS ──
+  // Phone numbers
   if (parsed.mobiles.length) {
-    // Remove duplicates
     const unique = [...new Set(parsed.mobiles)];
-    text += `📞━━━ PHONE NUMBERS \\(${unique.length}\\) ━━━📞\n`;
+    text += `📞━━━ PHONES \\(${unique.length}\\) ━━━📞\n`;
+    const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","🔘","⚪"];
     unique.forEach((mob, i) => {
-      const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","🔘"];
       text += `${colors[i % colors.length]}  \`${escMd(mob)}\`\n`;
     });
     text += "\n";
   }
 
-  // ── ADDRESSES ──
+  // Addresses
   if (parsed.addresses.length) {
     const unique = [...new Set(parsed.addresses)];
     text += `📍━━━ ADDRESSES \\(${unique.length}\\) ━━━📍\n`;
-    unique.forEach((addr, i) => {
-      text += `🔸  ${escMd(addr)}\n`;
-    });
+    unique.forEach(addr => { text += `🔸  ${escMd(addr)}\n`; });
     text += "\n";
   }
 
-  // ── REGION / OPERATOR ──
+  // Network
   if (parsed.region) {
-    text += `📡━━━ NETWORK ━━━📡\n`;
-    text += `${cbMd("📶 Region/Op ", parsed.region)}\n\n`;
+    text += `📡━━━ NETWORK ━━━📡\n${cbMd("📶 Region", parsed.region)}\n\n`;
   }
 
-  // ── SOCIAL ──
+  // Social
   if (parsed.facebook || parsed.country) {
     text += `🌐━━━ SOCIAL ━━━🌐\n`;
-    if (parsed.facebook) text += `${cbMd("📘 Facebook  ", parsed.facebook)}\n`;
-    if (parsed.country)  text += `${cbMd("🌍 Country   ", parsed.country)}\n`;
+    if (parsed.facebook) text += `${cbMd("📘 Facebook", parsed.facebook)}\n`;
+    if (parsed.country)  text += `${cbMd("🌍 Country ", parsed.country)}\n`;
     text += "\n";
   }
 
-  text += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
+  text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
   return text;
 }
 
+// ══════════════════════════════════════════════
+//  NEW AADHAAR API FORMAT
+//  URL: https://atof.onrender.com/full-search?aadhaar={number}
+//  Response: { success, ration_card_id, details: { card_info, members, monthly_summary } }
+// ══════════════════════════════════════════════
+
 function formatAdharResult(data, adharNumber) {
   try {
-    const result  = (data.result || {});
-    const results = (result.results || []);
-    if (!results.length) return null;
-    const entry   = results[0];
-    const rc      = entry.ration_card_details || {};
-    const addl    = entry.additional_info     || {};
-    const members = entry.members             || [];
-    const central = addl.exists_in_central_repository ? "✅ YES" : "❌ NO";
+    if (!data || !data.success) return null;
+    const details = data.details || {};
+    const card    = details.card_info        || {};
+    const members = details.members          || [];
+    const monthly = details.monthly_summary  || [];
+
     let out =
-      `┌─────────────────────────┐\n│  🪪  AADHAAR              │\n├─────────────────────────┤\n` +
-      `🔢  Aadhaar : \`${escMd(adharNumber)}\`\n\n` +
-      `📋━━━ RATION CARD ━━━📋\n` +
-      `${cbMd("🪪  Card No  ",rc.ration_card_no)}\n` +
-      `${cbMd("📌  Scheme   ",rc.scheme_name)}\n` +
-      `${cbMd("📍  District ",rc.district_name)}\n` +
-      `${cbMd("🗺️  State    ",rc.state_name)}\n` +
-      `${cbMd("🏪  FPS Type ",addl.fps_category)}\n` +
-      `🏛️  Central  : ${central}\n\n` +
-      `👨‍👩‍👧‍👦━━━ FAMILY \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
-    const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"];
-    members.forEach((m, i) => {
-      out += `${colors[i % colors.length]}  \\[${m.s_no || i+1}\\]  \`${escMd(m.member_name || "N/A")}\`\n`;
-    });
-    out += `\n└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
+      `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
+      `🔢  Aadhaar     : \`${escMd(adharNumber)}\`\n` +
+      `${cbMd("🪪  RC ID       ", data.ration_card_id)}\n\n`;
+
+    // Card info block
+    if (Object.keys(card).length) {
+      out += `📋━━━ RATION CARD ━━━📋\n`;
+      if (card["Card Type"])       out += `${cbMd("📌 Card Type   ", card["Card Type"])}\n`;
+      if (card["Scheme"])          out += `${cbMd("📋 Scheme      ", card["Scheme"])}\n`;
+      if (card["State"])           out += `${cbMd("🗺️  State       ", card["State"])}\n`;
+      if (card["District"])        out += `${cbMd("📍 District    ", card["District"])}\n`;
+      if (card["Issue Date"])      out += `${cbMd("📅 Issue Date  ", card["Issue Date"])}\n`;
+      if (card["Home FPS"])        out += `${cbMd("🏪 Home FPS    ", card["Home FPS"])}\n`;
+      if (card["Address"] && card["Address"] !== "null") out += `${cbMd("🏠 Address     ", card["Address"])}\n`;
+      out += "\n";
+    }
+
+    // Members block
+    if (members.length) {
+      out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
+      const genderIcon = g => (g||"").toLowerCase() === "f" ? "👩" : (g||"").toLowerCase() === "m" ? "👨" : "🧑";
+      const ekyc = s => s === "Y" ? "✅" : "❌";
+      const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"];
+      members.forEach((m, i) => {
+        const dot = colors[i % colors.length];
+        out +=
+          `${dot}━━ ${i+1}\\. ${escMd(m.member_name || "N/A")} ${genderIcon(m.gender)}\n` +
+          `   📋 Relation  : ${escMd(m.relationship || "N/A")}\n` +
+          `   🆔 UID       : \`${escMd(m.uid_masked || "N/A")}\`\n` +
+          `   ✅ eKYC      : ${ekyc(m.ekyc_status)}\n` +
+          `   📅 Updated   : ${escMd(m.cr_last_updated || "N/A")}\n\n`;
+      });
+    }
+
+    // Monthly summary
+    if (monthly.length) {
+      out += `📊━━━ RECENT MONTHS ━━━📊\n`;
+      monthly.slice(0,3).forEach(m => {
+        out += `📅 ${escMd(m.month)}  \\|  👥 Members: ${escMd(m.member_count)}\n`;
+      });
+      out += "\n";
+    }
+
+    out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
     return out;
   } catch (e) { console.error("[formatAdhar]", e.message); return null; }
 }
@@ -558,10 +538,7 @@ function formatUpiResult(data, upiId) {
   const branch = val(ifscD.BRANCH); const address = val(ifscD.ADDRESS); const city = val(ifscD.CITY);
   const district = val(ifscD.DISTRICT); const state = val(ifscD.STATE); const contact = val(ifscD.CONTACT);
   const rtgs = ifscD.RTGS; const neft = ifscD.NEFT; const imps = ifscD.IMPS; const upiSup = ifscD.UPI;
-  let lines = [
-    "┌─────────────────────────┐","│  💳  UPI LOOKUP          │","├─────────────────────────┤",
-    cbMd("💳 UPI ID      ",upiId),
-  ];
+  let lines = ["┌─────────────────────────┐","│  💳  UPI LOOKUP          │","├─────────────────────────┤", cbMd("💳 UPI ID      ",upiId)];
   if (name)     lines.push(cbMd("👤 Name        ",name));
   if (username) lines.push(cbMd("🔖 Username    ",username));
   lines.push(`✅ Valid        : ${valid ? "✅ YES" : "❌ NO"}`);
@@ -655,54 +632,38 @@ async function sendDbBackup(chatId) {
   try {
     const allUsers = await dbGetAllUsers();
     const total    = allUsers.length;
-    if (!total) {
-      await tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: "📭  Database empty hai." });
-      return;
-    }
-    const now = new Date().toISOString().slice(0,16).replace("T"," ");
+    if (!total) { await tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: "📭  Database empty hai." }); return; }
+    const now    = new Date().toISOString().slice(0,16).replace("T"," ");
+    const sorted = [...allUsers].sort((a,b) => (b.total_searches||0) - (a.total_searches||0));
+    const totalSearches = allUsers.reduce((s,u) => s + (u.total_searches||0), 0);
     const lines = [
       "╔════════════════════════════════╗",
       "║  🗄️  DATABASE BACKUP REPORT     ║",
       "╠════════════════════════════════╣",
-      `📊  Total Users   : ${total}`,
-      `🕐  Generated     : ${now} UTC`,
+      `📊  Total Users    : ${total}`,
+      `🔍  Total Searches : ${totalSearches}`,
+      `🕐  Generated      : ${now} UTC`,
       "╠════════════════════════════════╣",
-      // Header row
-      "No. | Name | Username | ID | Searches | First Seen | Last Seen",
-      "────────────────────────────────",
     ];
-    // Sort by total_searches descending — top searchers first
-    const sorted = [...allUsers].sort((a,b) => (b.total_searches||0) - (a.total_searches||0));
+    if (sorted[0]) lines.push(`🏆  Top Searcher: ${sorted[0].name||sorted[0].username||sorted[0].user_id} — ${sorted[0].total_searches||0} searches`);
+    lines.push("────────────────────────────────");
     sorted.forEach((u, i) => {
-      const name    = u.name       || "no name";
-      const uname   = u.username   ? `@${u.username}` : "no username";
-      const uid     = u.user_id    || "N/A";
-      const srch    = u.total_searches != null ? u.total_searches : 0;
-      const fseen   = (u.first_seen||"").slice(0,10) || "N/A";
-      const lseen   = (u.last_seen ||"").slice(0,10) || "N/A";
-      lines.push(`${i+1}. ${name} | ${uname} | ID: ${uid} | 🔍 Searches: ${srch}`);
+      const name  = u.name     || "no name";
+      const uname = u.username ? `@${u.username}` : "no username";
+      const srch  = u.total_searches != null ? u.total_searches : 0;
+      const fseen = (u.first_seen||"").slice(0,10) || "N/A";
+      const lseen = (u.last_seen ||"").slice(0,10) || "N/A";
+      lines.push(`${i+1}. ${name} | ${uname} | ID: ${u.user_id||"N/A"} | 🔍 ${srch}`);
       lines.push(`   📅 First: ${fseen}  |  Last: ${lseen}`);
     });
-    // Stats summary
-    const totalSearches = allUsers.reduce((s, u) => s + (u.total_searches||0), 0);
-    const topSearcher   = sorted[0];
-    lines.push(
-      "╠════════════════════════════════╣",
-      `🔍  Total Searches (all users): ${totalSearches}`,
-      topSearcher ? `🏆  Top Searcher: ${topSearcher.name || topSearcher.username || topSearcher.user_id} — ${topSearcher.total_searches||0} searches` : "",
-      "╚════════════════════════════════╝"
-    );
-
-    const fullText = lines.filter(Boolean).join("\n");
+    lines.push("╚════════════════════════════════╝");
+    const fullText = lines.join("\n");
     if (fullText.length > 4000) {
       const buf  = Buffer.from(fullText, "utf8");
       const form = new FormData();
       form.append("chat_id", String(chatId));
-      form.append("caption", `🗄️ RTF Bot DB Backup — ${total} users | 🔍 ${totalSearches} total searches\n📅 ${now} UTC`);
-      form.append("document", buf, {
-        filename:    `rtfbot_backup_${new Date().toISOString().slice(0,10)}.txt`,
-        contentType: "text/plain",
-      });
+      form.append("caption", `🗄️ RTF Bot DB — ${total} users | 🔍 ${totalSearches} searches | ${now} UTC`);
+      form.append("document", buf, { filename: `rtfbot_${new Date().toISOString().slice(0,10)}.txt`, contentType: "text/plain" });
       await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, ...agentFor(TG_BASE) });
       deleteMessage(chatId, statusMsg.message_id);
     } else {
@@ -721,18 +682,20 @@ async function apiFetch(url, timeout = 15000) {
   try { return JSON.parse(text); } catch { return text; }
 }
 
-// ── NEW DEEP API FETCHER ──────────────────────
 async function fetchDeepApi(number) {
+  if (!apiToggle.deep.enabled) return null;
+  // Always send with 91 prefix
   let raw = String(number).replace(/[+\s]/g,"");
   if (!raw.startsWith("91")) raw = "91" + raw;
   try {
     const data = await apiFetch(DEEP_API_URL.replace("{number}", raw));
     if (!data || typeof data !== "object") return null;
-    return data;   // Return full response — parseDeepApiResponse handles it
+    return data;
   } catch (e) { console.error("[DEEP API]", e.message); return null; }
 }
 
 async function fetchNumApi(cleanPhone) {
+  if (!apiToggle.num.enabled) return [];
   try {
     const data = await apiFetch(NUM_API_URL.replace("{number}", cleanPhone));
     return extractRecords(data);
@@ -763,7 +726,7 @@ async function fetchTgData(term) {
   const isUserId = /^\d+$/.test(term);
   let tgId = "N/A", targetUname = term, phone = null, countryCode = null, usedFallback = false;
 
-  if (apiToggle.tg_primary) {
+  if (apiToggle.tg_primary.enabled) {
     try {
       const url  = isUserId ? TG_USERID_API.replace("{userid}", term) : TG_USERNAME_API.replace("{username}", term);
       const data = await apiFetch(url, 20000);
@@ -774,7 +737,7 @@ async function fetchTgData(term) {
     } catch (e) { console.error("[TG PRIMARY]", e.message); }
   }
 
-  if (!phone && apiToggle.tg_fallback) {
+  if (!phone && apiToggle.tg_fallback.enabled) {
     try {
       const q    = (term.startsWith("@") || isUserId) ? term : `@${term}`;
       const data = await apiFetch(TG_FALLBACK_API.replace("{query}", encodeURIComponent(q)), 20000);
@@ -795,18 +758,23 @@ async function fetchTgData(term) {
 
 // ══════════════════════════════════════════════
 //  LOOKUP HANDLERS
-//  Data mila    → reply me data, kuch delete nahi
-//  Data nahi    → reply me not found, 15s baad dono delete
-//  dbIncrSearch → har successful search pe count++
 // ══════════════════════════════════════════════
 
 async function handleNumber(chatId, number, userMsgId = null, userId = null) {
+  // Check if BOTH num + deep are off
+  if (!apiToggle.num.enabled && !apiToggle.deep.enabled) {
+    await sendDataNotFound(chatId, userMsgId,
+      `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.num.offMsg}`
+    );
+    return;
+  }
+
   const statusMsg = await sendPlain(chatId, `🔍  Searching: ${number} ...`);
   try {
     let clean = number.trim().replace(/\s/g,"").replace("+91","");
     if (clean.startsWith("91") && clean.length > 10) clean = clean.slice(2);
 
-    // Parallel: num API + new deep API
+    // Run both APIs in parallel
     const [records, deepApiRaw] = await Promise.all([
       fetchNumApi(clean),
       fetchDeepApi(number),
@@ -815,7 +783,7 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
     deleteMessage(chatId, statusMsg.message_id);
 
     const deepParsed = parseDeepApiResponse(deepApiRaw);
-    const deepFmt    = formatDeepApiResult(deepParsed, clean);
+    const deepFmt    = formatDeepResult(deepParsed, clean);
 
     if (!records.length && !deepFmt) {
       await sendDataNotFound(chatId, userMsgId,
@@ -824,12 +792,12 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
       return;
     }
 
-    // Search found — increment count
     if (userId) dbIncrSearch(userId);
 
+    // Combine: num result first, then deep data below
     let full = "";
-    if (records.length) full += formatNumResult(records, clean);
-    if (deepFmt)        full += (full ? "\n\n" : "") + deepFmt;
+    if (records.length && apiToggle.num.enabled) full += formatNumResult(records, clean);
+    if (deepFmt)                                  full += deepFmt;
 
     await sendDataFound(chatId, userMsgId, full);
   } catch (e) {
@@ -850,8 +818,10 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
     return;
   }
 
-  if (!apiToggle.tg_primary && !apiToggle.tg_fallback) {
-    await sendDataNotFound(chatId, userMsgId, "╔══════════════════════╗\n║  ⚠️  APIs DISABLED    ║\n╠══════════════════════╣\n. @RTFGMINGGC \nIS LINK KO COPY KRKE 4000 MEMBERS COMPLETE KRO FIR TG TO NUM ON HO JAYEGA.\n╚══════════════════════╝");
+  if (!apiToggle.tg_primary.enabled && !apiToggle.tg_fallback.enabled) {
+    await sendDataNotFound(chatId, userMsgId,
+      `╔══════════════════════╗\n║  ⚠️  API OFFLINE      ║\n╠══════════════════════╣\n${apiToggle.tg_primary.offMsg}\n╚══════════════════════╝`
+    );
     return;
   }
 
@@ -875,9 +845,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
     const uDisplay = /^\d+$/.test(targetUname) ? targetUname : `@${targetUname}`;
 
     let tgBlock =
-      `┌─────────────────────────┐\n` +
-      `│  🔎  TG LOOKUP           │\n` +
-      `├─────────────────────────┤\n` +
+      `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n` +
       `${cbMd("💻 Username    ", uDisplay)}\n` +
       `${cbMd("🆔 Telegram ID ", tgId)}\n` +
       `${cbMd("📞 Phone       ", phone || "N/A")}\n` +
@@ -889,14 +857,13 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       let cleanPhone = phone.replace(/[+\s]/g,"");
       if (cleanPhone.startsWith("91") && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(2);
       const [numRes, deepApiRaw] = await Promise.all([fetchNumApi(cleanPhone), fetchDeepApi(phone)]);
-      if (numRes.length) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
+      if (numRes.length && apiToggle.num.enabled) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
       const dp = parseDeepApiResponse(deepApiRaw);
-      const df = formatDeepApiResult(dp, cleanPhone);
-      if (df) tgBlock += "\n\n" + df;
+      const df = formatDeepResult(dp, cleanPhone);
+      if (df) tgBlock += df;
     }
 
     await sendDataFound(chatId, userMsgId, tgBlock);
-
   } catch (e) {
     console.error("[TG LOOKUP]", e.message);
     deleteMessage(chatId, statusMsg.message_id);
@@ -905,13 +872,17 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
 }
 
 async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
+  if (!apiToggle.adhar.enabled) {
+    await sendDataNotFound(chatId, userMsgId,
+      `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.adhar.offMsg}`
+    );
+    return;
+  }
   const statusMsg = await sendPlain(chatId, `🔍  Searching Aadhaar: ${adharRaw} ...`);
   try {
     const data = await apiFetch(ADHAR_API_URL.replace("{number}", adharRaw));
     deleteMessage(chatId, statusMsg.message_id);
-    const resultObj   = data.result || {};
-    const resultsList = resultObj.results || [];
-    if (!data.success && !resultObj.success && !resultsList.length) {
+    if (!data || !data.success) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: ${adharRaw}`);
       return;
     }
@@ -927,14 +898,15 @@ async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
 }
 
 async function handleUpi(chatId, upiId, userMsgId = null, userId = null) {
+  if (!apiToggle.upi.enabled) {
+    await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.upi.offMsg}`);
+    return;
+  }
   const statusMsg = await sendPlain(chatId, `🔍  Searching UPI: ${upiId} ...`);
   try {
     const data = await apiFetch(UPI_API_URL.replace("{upi}", upiId.trim()));
     deleteMessage(chatId, statusMsg.message_id);
-    if (!data.success) {
-      await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: ${upiId}`);
-      return;
-    }
+    if (!data.success) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: ${upiId}`); return; }
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, formatUpiResult(data, upiId));
   } catch (e) {
@@ -945,15 +917,16 @@ async function handleUpi(chatId, upiId, userMsgId = null, userId = null) {
 }
 
 async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null) {
+  if (!apiToggle.vehicle.enabled) {
+    await sendDataNotFound(chatId, userMsgId, `╔══════════════════════╗\n║  ⚠️  API OFFLINE       ║\n╚══════════════════════╝\n${apiToggle.vehicle.offMsg}`);
+    return;
+  }
   vehicleNo = vehicleNo.trim().toUpperCase().replace(/\s/g,"");
   const statusMsg = await sendPlain(chatId, `🔍  Searching Vehicle: ${vehicleNo} ...`);
   try {
     const data = await apiFetch(VEHICLE_API_URL.replace("{vehicle}", vehicleNo), 20000);
     deleteMessage(chatId, statusMsg.message_id);
-    if (!data.success) {
-      await sendDataNotFound(chatId, userMsgId, `╔══════════════════════╗\n║  ❌ VEHICLE NOT FOUND  ║\n╚══════════════════════╝\n🚗  Vehicle: ${vehicleNo}`);
-      return;
-    }
+    if (!data.success) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════════╗\n║  ❌ VEHICLE NOT FOUND  ║\n╚══════════════════════╝\n🚗  Vehicle: ${vehicleNo}`); return; }
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, formatVehicleResult(data));
   } catch (e) {
@@ -988,26 +961,39 @@ async function handleCallback(cb) {
     return;
   }
 
-  if (data === "api_tog_primary" && _isAdmin) {
-    apiToggle.tg_primary = !apiToggle.tg_primary;
-    await answerCallback(cb.id, `TG Primary API ${apiToggle.tg_primary ? "🟢 ON" : "🔴 OFF"}`, true);
-    await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() });
+  // API toggle — admin only
+  if (data.startsWith("api_tog_") && _isAdmin) {
+    const key = data.replace("api_tog_", "");
+    if (apiToggle[key]) {
+      apiToggle[key].enabled = !apiToggle[key].enabled;
+      const st = apiToggle[key].enabled ? "🟢 ON" : "🔴 OFF";
+      await answerCallback(cb.id, `${apiToggle[key].label} ${st}`, true);
+      await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() });
+    }
     return;
   }
-  if (data === "api_tog_fallback" && _isAdmin) {
-    apiToggle.tg_fallback = !apiToggle.tg_fallback;
-    await answerCallback(cb.id, `TG Fallback API ${apiToggle.tg_fallback ? "🟢 ON" : "🔴 OFF"}`, true);
-    await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() });
+
+  // API set custom off message
+  if (data.startsWith("api_msg_") && _isAdmin) {
+    const key = data.replace("api_msg_", "");
+    if (apiToggle[key]) {
+      userState.set(from.id, `api_offmsg::${key}`);
+      await answerCallback(cb.id);
+      await sendPlain(chatId,
+        `✏️  ${apiToggle[key].label} ka off message set karo:\n\n` +
+        `Current: "${apiToggle[key].offMsg}"\n\n` +
+        `Ab naya message type karo (ya "cancel" bhejo):`
+      );
+    }
     return;
   }
 
   await answerCallback(cb.id);
-
   if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
   const prompts = {
     menu_number:  "╔════════════════════╗\n║  📞 NUMBER LOOKUP  ║\n╚════════════════════╝\n📥  Number bhejo:\n📌 Format: 9876543210",
-    menu_tg:      "╔═══════════════════════╗\n║   🔎  TG LOOKUP       ║\n╠═══════════════════════╣\n📥  Username YA numeric ID\n✅  rtfgamming\n✅  @rtfgamming\n✅  8518042438\n╚═══════════════════════╝",
+    menu_tg:      "╔═══════════════════════╗\n║   🔎  TG LOOKUP       ║\n╠═══════════════════════╣\n📥  Username YA numeric ID\n✅  rtfgamming / @rtfgamming / 8518042438\n╚═══════════════════════╝",
     menu_adhar:   "╔══════════════════════╗\n║  🪪  AADHAAR LOOKUP  ║\n╚══════════════════════╝\n📥  Aadhaar number bhejo:\n📌 Example: 598229659586",
     menu_upi:     "╔══════════════════════╗\n║  💳  UPI LOOKUP      ║\n╚══════════════════════╝\n📥  UPI ID bhejo:\n📌 Example: 70497398@axl",
     menu_vehicle: "╔══════════════════════╗\n║  🚗  VEHICLE LOOKUP  ║\n╚══════════════════════╝\n📥  Vehicle number bhejo:\n📌 Example: MH02FZ0555",
@@ -1016,22 +1002,21 @@ async function handleCallback(cb) {
 
   if (stateMap[data]) { userState.set(from.id, stateMap[data]); await sendPlain(chatId, prompts[data]); return; }
   if (data === "menu_help")  { await sendPlain(chatId, HELP_TEXT); return; }
-  if (data === "menu_owner") { await sendPlain(chatId, "╔══════════════════╗\n║  👑  OWNER INFO   ║\n╚══════════════════╝\n🔗 Telegram: @RTFGAMMING\nhttps://t.me/RTFGAMMING"); return; }
+  if (data === "menu_owner") { await sendPlain(chatId, "╔══════════════════╗\n║  👑  OWNER INFO   ║\n╚══════════════════╝\n🔗 https://t.me/RTFGAMMING"); return; }
 
   if (!_isAdmin) return;
 
-  if (data === "menu_users")      { const count = await dbUserCount(); await sendPlain(chatId, `📊 Total Users: ${count}\n🗄️ Source: MongoDB`); return; }
+  if (data === "menu_users")      { const c = await dbUserCount(); await sendPlain(chatId, `📊 Total Users: ${c}\n🗄️ Source: MongoDB`); return; }
   if (data === "menu_dbbackup")   { await sendDbBackup(chatId); return; }
   if (data === "menu_adminlist")  { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST   ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
   if (data === "menu_broadcast")  { userState.set(from.id, "broadcast"); await sendPlain(chatId, "📢  Broadcast message type karo:"); return; }
-  if (data === "menu_setcustomtg"){ userState.set(from.id, "setcustomtg_step1"); await sendPlain(chatId, "╔══════════════════════════╗\n║  ✏️  SET CUSTOM TG DATA   ║\n╠══════════════════════════╣\n📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming\n╚══════════════════════════╝"); return; }
+  if (data === "menu_setcustomtg"){ userState.set(from.id, "setcustomtg_step1"); await sendPlain(chatId, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming"); return; }
   if (data === "menu_api")        { await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() }); return; }
   if (data === "menu_adminpanel") {
     await sendPlain(chatId,
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
-      "📢  /broadcast <msg>\n👥  /users\n➕  /addadmin @user\n➖  /removeadmin @user\n" +
-      "📋  /listadmins\n✏️  /setcustomtg @user <data>\n🗑️  /delcustomtg @user\n📋  /listcustomtg\n" +
-      "🗄️  /dbbackup\n🔌  /apimanager\n╚══════════════════════════╝"
+      "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
+      "✏️ /setcustomtg  🗑️ /delcustomtg\n📋 /listcustomtg  🔌 /apimanager\n╚══════════════════════════╝"
     );
     return;
   }
@@ -1062,6 +1047,22 @@ async function handleUpdate(update) {
     if (!choice) return;
 
     if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
+
+    // API off-message setter
+    if (typeof choice === "string" && choice.startsWith("api_offmsg::") && _isAdmin) {
+      const key = choice.split("::")[1];
+      if (text.toLowerCase() === "cancel") {
+        userState.delete(from.id);
+        await sendPlain(chatId, "❌  Cancel ho gaya.");
+        return;
+      }
+      if (apiToggle[key]) {
+        apiToggle[key].offMsg = text.trim();
+        await sendPlain(chatId, `✅  ${apiToggle[key].label} ka off message set ho gaya!\n\n"${text.trim()}"`);
+      }
+      userState.delete(from.id);
+      return;
+    }
 
     if (choice === "broadcast" && _isAdmin) {
       const users = await dbGetAllUsers();
@@ -1098,16 +1099,8 @@ async function handleUpdate(update) {
 
 async function handleAdminText(chatId, userId, text) {
   const lower = text.toLowerCase();
-  if (lower === "/admin") {
-    await sendPlain(chatId,
-      "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
-      "📢  /broadcast <msg>\n👥  /users\n➕  /addadmin @user\n➖  /removeadmin @user\n" +
-      "📋  /listadmins\n✏️  /setcustomtg @user <data>\n🗑️  /delcustomtg @user\n📋  /listcustomtg\n" +
-      "🗄️  /dbbackup\n🔌  /apimanager\n╚══════════════════════════╝"
-    );
-    return;
-  }
-  if (lower === "/apimanager") { await sendPlain(chatId, apiManagerText(), { reply_markup: apiManagerKb() }); return; }
+  if (lower === "/admin")        { await sendPlain(chatId, "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n✏️ /setcustomtg  🗑️ /delcustomtg\n📋 /listcustomtg  🔌 /apimanager\n╚══════════════════════════╝"); return; }
+  if (lower === "/apimanager")   { await sendPlain(chatId, apiManagerText(), { reply_markup: apiManagerKb() }); return; }
   if (lower.startsWith("/broadcast")) {
     const msgText = text.slice("/broadcast".length).trim();
     if (!msgText) { await sendPlain(chatId, "❌  Usage: /broadcast <message>"); return; }
@@ -1118,8 +1111,8 @@ async function handleAdminText(chatId, userId, text) {
     await tgApi("editMessageText", { chat_id: chatId, message_id: status.message_id, text: `✅ Delivered: ${ok}\n❌ Failed: ${fail}\n👥 Total: ${uids.length}` });
     return;
   }
-  if (lower === "/users") { const count = await dbUserCount(); await sendPlain(chatId, `📊  Total Users: ${count}\n🗄️ Source: MongoDB`); return; }
-  if (lower === "/dbbackup") { await sendDbBackup(chatId); return; }
+  if (lower === "/users")        { const c = await dbUserCount(); await sendPlain(chatId, `📊  Total Users: ${c}\n🗄️ Source: MongoDB`); return; }
+  if (lower === "/dbbackup")     { await sendDbBackup(chatId); return; }
   if (lower.startsWith("/addadmin")) {
     const parts = text.trim().split(/\s+/);
     if (parts.length < 2) { await sendPlain(chatId, "❌  Usage: /addadmin @username"); return; }
@@ -1138,7 +1131,7 @@ async function handleAdminText(chatId, userId, text) {
     else { await sendPlain(chatId, `⚠️  ${rem} list me nahi hai.`); }
     return;
   }
-  if (lower === "/listadmins") { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST    ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
+  if (lower === "/listadmins")   { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST    ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
   if (lower.startsWith("/setcustomtg")) {
     const parts = text.trim().split(/\s+/, 3);
     if (parts.length < 3) { await sendPlain(chatId, "❌  Usage: /setcustomtg @username <custom_text>"); return; }
@@ -1176,7 +1169,6 @@ async function handleCommand(msg) {
   const _isAdm = isAdmin(from.username);
 
   dbSaveUser(from);
-
   if (!_isAdm && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
   const match = text.match(/^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?/);
@@ -1193,31 +1185,22 @@ async function handleCommand(msg) {
   else if (_isAdm)            { await handleAdminText(chatId, from.id, text); }
 }
 
-// ── EXPRESS WEBHOOK ───────────────────────────
+// ── WEBHOOK ───────────────────────────────────
 app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
-  res.sendStatus(200);  // Turant 200 — Telegram ko wait mat karao
+  res.sendStatus(200);
   const update = req.body;
   if (!update) return;
-
-  if (update.callback_query) {
-    const uid = update.callback_query.from.id;
-    queueForUser(uid, () => handleCallback(update.callback_query));
-    return;
-  }
-
+  if (update.callback_query) { queueForUser(update.callback_query.from.id, () => handleCallback(update.callback_query)); return; }
   const msg = update.message || update.edited_message;
   if (!msg || !msg.from) return;
-
   const uid  = msg.from.id;
   const text = (msg.text || "").trim();
-
   if (text.startsWith("/")) { queueForUser(uid, () => handleCommand(msg)); }
   else                      { queueForUser(uid, () => handleUpdate(update)); }
 });
 
 app.get("/", (_req, res) => res.send("RTF Bot is running ✅"));
 
-// ── STARTUP ───────────────────────────────────
 async function start() {
   if (!BOT_TOKEN) { console.error("[BOT] BOT_TOKEN not set! Exiting."); process.exit(1); }
   await initDb();
@@ -1234,9 +1217,7 @@ async function start() {
     const wh = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
     await setWebhook(wh);
     console.log(`[BOT] Webhook set → ${wh}`);
-  } else {
-    console.warn("[BOT] WEBHOOK_URL not set");
-  }
+  } else { console.warn("[BOT] WEBHOOK_URL not set"); }
   app.listen(PORT, () => console.log(`[BOT] Server listening on port ${PORT} ✅`));
 }
 
