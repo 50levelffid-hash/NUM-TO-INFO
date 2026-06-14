@@ -19,7 +19,7 @@ const OWNER       = "@RTFGAMMING";
 
 // ── API URLs ──────────────────────────────────
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
-const DEEP_API_URL    = "https://api.fbi.gov.in/?query={number}";
+const DEEP_API_URL    = "https://froxtdevil-deep-search.onrender.com/api/lookup?query={number}";
 const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
 const TG_USERNAME_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=3c7c79ee5d09e54d714c6cf960017b62";
 const TG_USERID_API   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=3c7c79ee5d09e54d714c6cf960017b62";
@@ -387,7 +387,7 @@ function parseDeepApiResponse(apiData) {
       if (sep === -1) continue;
       const key = line.slice(0, sep).trim().toLowerCase();
       const val = line.slice(sep + 1).trim();
-      if (!val || val === "" || val === "0001 12" || val === "null") continue;
+      if (!val || val === "" || val.includes("0001") || val === "null" || val === "undefined") continue;
 
       if      (key === "mobile")          { if (!parsed.mobiles.includes(val)) parsed.mobiles.push(val); }
       else if (key === "address")         { if (!parsed.addresses.includes(val)) parsed.addresses.push(val); }
@@ -411,9 +411,10 @@ function formatDeepResult(parsed, queryNumber) {
   if (!hasMeaningful) return null;
 
   let text =
-    `\n\n🔬━━━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-    `│      D E E P   I N T E L      │\n` +
-    `🔬━━━━━━━━━━━━━━━━━━━━━━━🔬\n` +
+    `\n\n` +
+    `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
+    `│  🕵️  D E E P   I N T E L   │\n` +
+    `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
 
   // Identity
@@ -684,11 +685,15 @@ async function apiFetch(url, timeout = 15000) {
 
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
-  // Always send with 91 prefix
+  // Normalize: strip +, spaces, country code prefix if needed
   let raw = String(number).replace(/[+\s]/g,"");
-  if (!raw.startsWith("91")) raw = "91" + raw;
+  // Agar 10 digit Indian number hai, 91 lagao
+  if (raw.length === 10 && !raw.startsWith("91")) raw = "91" + raw;
+  // Agar pehle se 91 se shuru hai (12 digits) — theek hai
+  console.log(`[DEEP API] Querying: ${raw}`);
   try {
-    const data = await apiFetch(DEEP_API_URL.replace("{number}", raw));
+    const data = await apiFetch(DEEP_API_URL.replace("{number}", raw), 20000);
+    console.log(`[DEEP API] Response status: ${data && data.status}`);
     if (!data || typeof data !== "object") return null;
     return data;
   } catch (e) { console.error("[DEEP API]", e.message); return null; }
@@ -794,10 +799,15 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
 
     if (userId) dbIncrSearch(userId);
 
-    // Combine: num result first, then deep data below
+    // Combine: num result first, then deep data below with clear separator
     let full = "";
-    if (records.length && apiToggle.num.enabled) full += formatNumResult(records, clean);
-    if (deepFmt)                                  full += deepFmt;
+    if (records.length && apiToggle.num.enabled) {
+      full += formatNumResult(records, clean);
+    }
+    if (deepFmt) {
+      // deepFmt already starts with \n\n separator from formatDeepResult
+      full += deepFmt;
+    }
 
     await sendDataFound(chatId, userMsgId, full);
   } catch (e) {
@@ -860,7 +870,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       if (numRes.length && apiToggle.num.enabled) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
       const dp = parseDeepApiResponse(deepApiRaw);
       const df = formatDeepResult(dp, cleanPhone);
-      if (df) tgBlock += df;
+      if (df) tgBlock += df;  // formatDeepResult already adds \n\n prefix
     }
 
     await sendDataFound(chatId, userMsgId, tgBlock);
