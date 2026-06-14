@@ -19,7 +19,7 @@ const OWNER       = "@RTFGAMMING";
 
 // ── API URLs ──────────────────────────────────
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
-const DEEP_API_URL    = "https://froxtdevil-deep-search.onrender.com/api/lookup?query={number}";
+const DEEP_API_URL    = "https://all-leak-check-api.vercel.app/api/search?query={number}";
 const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
 const TG_USERNAME_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=3c7c79ee5d09e54d714c6cf960017b62";
 const TG_USERID_API   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=3c7c79ee5d09e54d714c6cf960017b62";
