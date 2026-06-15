@@ -21,9 +21,8 @@ const OWNER       = "@RTFGAMMING";
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
 const DEEP_API_URL    = "https://all-leak-check-api.vercel.app/api/search?query={number}";
 const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
-// New primary TG API — username aur userid dono same URL se
-// term= ke baad username ya userid dono chalte hain
-const TG_PRIMARY_API  = "https://tgtonumanurixx-1jjw.vercel.app?term={term}";
+const TG_USERNAME_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
+const TG_USERID_API   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
 const TG_FALLBACK_API = "https://rootx-osint.in/?type=tg_num&key=@Clanemain&query={query}";
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
@@ -708,60 +707,58 @@ async function fetchNumApi(cleanPhone) {
   } catch (e) { console.error("[NUM API]", e.message); return []; }
 }
 
-// ── NEW PRIMARY API PARSER ───────────────────
-// Response: { success, tg_id, number, country, country_code, msg }
-// Same for username AND userid — bas term= mein dono dete hain
-function parseTgPrimaryNew(data, inputTerm) {
-  const phone       = data.number       ? String(data.number).trim()       : null;
-  const tgId        = data.tg_id        ? String(data.tg_id).trim()        : "N/A";
-  const countryCode = data.country_code ? String(data.country_code).trim() : "N/A";
-  const country     = data.country      ? String(data.country).trim()      : null;
-  return { tgId, targetUname: inputTerm, phone, countryCode, country };
+function parseTgPrimary(data, inputTerm) {
+  let tgId = String(data.target_id || "N/A");
+  let targetUname = data.target_username || inputTerm;
+  let phone = null, countryCode = null;
+  for (const sv of Object.values(data.data || {})) {
+    if (typeof sv !== "object") continue;
+    for (const rec of (sv.records || [])) {
+      if (!rec) continue;
+      const rp = rec.phone ? String(rec.phone).trim() : null;
+      if (rp && !["","None","null"].includes(rp)) {
+        phone = rp; countryCode = String(rec.country_code || "N/A");
+        if (rec.tg_id) tgId = String(rec.tg_id);
+        break;
+      }
+    }
+    if (phone) break;
+  }
+  return { tgId, targetUname, phone, countryCode };
 }
 
 async function fetchTgData(term) {
   const isUserId = /^\d+$/.test(term);
-  let tgId = "N/A", targetUname = term, phone = null, countryCode = null, country = null, usedFallback = false;
+  let tgId = "N/A", targetUname = term, phone = null, countryCode = null, usedFallback = false;
 
-  // ── Step 1: New Primary API ───────────────────
-  // Username ya userid — dono same URL se kaam karte hain
   if (apiToggle.tg_primary.enabled) {
     try {
-      const url  = TG_PRIMARY_API.replace("{term}", encodeURIComponent(term));
-      console.log(`[TG PRIMARY] Querying: ${url}`);
+      const url  = isUserId ? TG_USERID_API.replace("{userid}", term) : TG_USERNAME_API.replace("{username}", term);
       const data = await apiFetch(url, 20000);
-      console.log(`[TG PRIMARY] Response: success=${data && data.success} tg_id=${data && data.tg_id} number=${data && data.number}`);
-      if (data && data.success === true) {
-        const p   = parseTgPrimaryNew(data, term);
-        tgId        = p.tgId;
-        targetUname = p.targetUname;
-        phone       = p.phone && p.phone !== "" && p.phone !== "None" ? p.phone : null;
-        countryCode = p.countryCode;
-        country     = p.country;
+      if (data && data.status && data.target_id) {
+        const p = parseTgPrimary(data, term);
+        tgId = p.tgId; targetUname = p.targetUname; phone = p.phone; countryCode = p.countryCode;
       }
     } catch (e) { console.error("[TG PRIMARY]", e.message); }
   }
 
-  // ── Step 2: Fallback API — agar primary se phone nahi mila ──
   if (!phone && apiToggle.tg_fallback.enabled) {
     try {
       const q    = (term.startsWith("@") || isUserId) ? term : `@${term}`;
       const data = await apiFetch(TG_FALLBACK_API.replace("{query}", encodeURIComponent(q)), 20000);
-      console.log(`[TG FALLBACK] Response: success=${data && data.success} number=${data && data.number}`);
       if (data && data.success) {
         const fp = String(data.number || "").trim();
         if (fp && fp !== "None" && fp !== "") {
           usedFallback = true;
           phone        = fp;
           countryCode  = String(data.country_code || countryCode || "N/A");
-          country      = data.country ? String(data.country) : country;
           if (data.tg_id && String(data.tg_id) !== "N/A") tgId = String(data.tg_id);
         }
       }
     } catch (e) { console.error("[TG FALLBACK]", e.message); }
   }
 
-  return { tgId, targetUname, phone, countryCode, country, usedFallback };
+  return { tgId, targetUname, phone, countryCode, usedFallback };
 }
 
 // ══════════════════════════════════════════════
@@ -863,7 +860,6 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       `${cbMd("🆔 Telegram ID ", tgId)}\n` +
       `${cbMd("📞 Phone       ", phone || "N/A")}\n` +
       `${cbMd("🌍 Country Code", countryCode || "N/A")}\n` +
-      (country ? `${cbMd("🗺️  Country     ", country)}\n` : "") +
       `🔌  Source       : ${escMd(srcLabel)}\n` +
       `└─────────────────────────┘\n`;
 
