@@ -21,10 +21,12 @@ const OWNER       = "@RTFGAMMING";
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
 const DEEP_API_URL    = "https://all-leak-check-api.vercel.app/api/search?query={number}";
 const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
-// New primary TG API — username aur userid dono same URL se
-// term= ke baad username ya userid dono chalte hain
-const TG_PRIMARY_API  = "https://tgtonumanurixx-1jjw.vercel.app?term={term}";
-const TG_FALLBACK_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
+
+// ── TG API URLS (3 SEPARATE) ──────────────────
+const TG_API_USERNAME = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
+const TG_API_USERID   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
+const TG_API_PRIMARY  = "https://tgtonumanurixx-1jjw.vercel.app?term={term}";
+
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
 
@@ -39,38 +41,45 @@ const JOINED_STATUSES = new Set(["member","administrator","creator","restricted"
 let admins         = ["@rtfgamming"];
 const userState    = new Map();
 const customTgData = new Map();
+const customNumData = new Map();
 
-// ══════════════════════════════════════════════
-//  API TOGGLE SYSTEM
-//  Har API ke liye:
-//    enabled: on/off
-//    offMsg:  admin ka custom message jab API off ho
-// ══════════════════════════════════════════════
+// ── PREMIUM EMOJI TOKENS ──────────────────────
+const EMOJI_TOKENS = {
+  shield: "4958900559139570572",
+  minus:  "6316341362635578009",
+};
+
+// ── API TOGGLE SYSTEM ─────────────────────────
 const apiToggle = {
   num: {
     enabled: true,
     label:   "📞 Number API",
-    offMsg:  "❌ Number lookup abhi available nahi hai. Thodi der baad try karo.",
+    offMsg:  "❌ Number lookup abhi available nahi hai.",
   },
   deep: {
     enabled: true,
     label:   "🔬 Deep Intel API",
     offMsg:  "❌ Deep data lookup abhi available nahi hai.",
   },
+  tg_username: {
+    enabled: true,
+    label:   "🔎 TG Username API",
+    offMsg:  "❌ TG Username API unavailable.",
+  },
+  tg_userid: {
+    enabled: true,
+    label:   "🔎 TG UserID API",
+    offMsg:  "❌ TG UserID API unavailable.",
+  },
   tg_primary: {
     enabled: true,
     label:   "🔎 TG Primary API",
-    offMsg:  "❌ TG lookup abhi available nahi hai. Fallback try kar raha hai...",
-  },
-  tg_fallback: {
-    enabled: true,
-    label:   "🔎 TG Fallback API",
-    offMsg:  "❌ TG fallback bhi abhi available nahi hai.",
+    offMsg:  "❌ TG Primary API unavailable.",
   },
   adhar: {
     enabled: true,
     label:   "🪪 Aadhaar API",
-    offMsg:  "❌ Aadhaar lookup abhi available nahi hai. Thodi der baad try karo.",
+    offMsg:  "❌ Aadhaar lookup abhi available nahi hai.",
   },
   upi: {
     enabled: true,
@@ -277,6 +286,7 @@ function adminMenuKb() {
     [{ text: "📢 Broadcast", callback_data: "menu_broadcast" }, { text: "👥 Users Count", callback_data: "menu_users" }],
     [{ text: "📋 Admin List", callback_data: "menu_adminlist" }, { text: "⚙️ Admin Panel", callback_data: "menu_adminpanel" }],
     [{ text: "✏️ Set Custom TG", callback_data: "menu_setcustomtg" }],
+    [{ text: "✏️ Set Custom Num", callback_data: "menu_setcustomnum" }],
     [{ text: "🗄️ DB Backup", callback_data: "menu_dbbackup" }],
     [{ text: "🔌 API Manager", callback_data: "menu_api" }],
   ]};
@@ -284,9 +294,8 @@ function adminMenuKb() {
 
 // ══════════════════════════════════════════════
 //  API MANAGER PANEL
-//  Har API ka toggle + custom off message
 // ══════════════════════════════════════════════
-const API_KEYS = ["num","deep","tg_primary","tg_fallback","adhar","upi","vehicle"];
+const API_KEYS = ["num","deep","tg_username","tg_userid","tg_primary","adhar","upi","vehicle"];
 
 function apiManagerKb() {
   const rows = API_KEYS.map(k => {
@@ -357,8 +366,6 @@ function formatNumResult(records, number) {
 
 // ══════════════════════════════════════════════
 //  DEEP API PARSER + FORMATTER
-//  Input: full API response
-//  Response format: { result: { data: ["Mobile: ...", "Address: ..."] } }
 // ══════════════════════════════════════════════
 
 function parseDeepApiResponse(apiData) {
@@ -418,7 +425,6 @@ function formatDeepResult(parsed, queryNumber) {
     `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
 
-  // Identity
   if (parsed.full_name || parsed.name || parsed.surname || parsed.father || parsed.gender) {
     text += `👤━━━ IDENTITY ━━━👤\n`;
     if (parsed.full_name) text += `${cbMd("🧑 Full Name  ", parsed.full_name)}\n`;
@@ -431,7 +437,6 @@ function formatDeepResult(parsed, queryNumber) {
     text += "\n";
   }
 
-  // Phone numbers
   if (parsed.mobiles.length) {
     const unique = [...new Set(parsed.mobiles)];
     text += `📞━━━ PHONES \\(${unique.length}\\) ━━━📞\n`;
@@ -442,7 +447,6 @@ function formatDeepResult(parsed, queryNumber) {
     text += "\n";
   }
 
-  // Addresses
   if (parsed.addresses.length) {
     const unique = [...new Set(parsed.addresses)];
     text += `📍━━━ ADDRESSES \\(${unique.length}\\) ━━━📍\n`;
@@ -450,12 +454,10 @@ function formatDeepResult(parsed, queryNumber) {
     text += "\n";
   }
 
-  // Network
   if (parsed.region) {
     text += `📡━━━ NETWORK ━━━📡\n${cbMd("📶 Region", parsed.region)}\n\n`;
   }
 
-  // Social
   if (parsed.facebook || parsed.country) {
     text += `🌐━━━ SOCIAL ━━━🌐\n`;
     if (parsed.facebook) text += `${cbMd("📘 Facebook", parsed.facebook)}\n`;
@@ -468,9 +470,7 @@ function formatDeepResult(parsed, queryNumber) {
 }
 
 // ══════════════════════════════════════════════
-//  NEW AADHAAR API FORMAT
-//  URL: https://atof.onrender.com/full-search?aadhaar={number}
-//  Response: { success, ration_card_id, details: { card_info, members, monthly_summary } }
+//  AADHAAR FORMAT
 // ══════════════════════════════════════════════
 
 function formatAdharResult(data, adharNumber) {
@@ -486,7 +486,6 @@ function formatAdharResult(data, adharNumber) {
       `🔢  Aadhaar     : \`${escMd(adharNumber)}\`\n` +
       `${cbMd("🪪  RC ID       ", data.ration_card_id)}\n\n`;
 
-    // Card info block
     if (Object.keys(card).length) {
       out += `📋━━━ RATION CARD ━━━📋\n`;
       if (card["Card Type"])       out += `${cbMd("📌 Card Type   ", card["Card Type"])}\n`;
@@ -499,7 +498,6 @@ function formatAdharResult(data, adharNumber) {
       out += "\n";
     }
 
-    // Members block
     if (members.length) {
       out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
       const genderIcon = g => (g||"").toLowerCase() === "f" ? "👩" : (g||"").toLowerCase() === "m" ? "👨" : "🧑";
@@ -516,7 +514,6 @@ function formatAdharResult(data, adharNumber) {
       });
     }
 
-    // Monthly summary
     if (monthly.length) {
       out += `📊━━━ RECENT MONTHS ━━━📊\n`;
       monthly.slice(0,3).forEach(m => {
@@ -686,11 +683,8 @@ async function apiFetch(url, timeout = 15000) {
 
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
-  // Normalize: strip +, spaces, country code prefix if needed
   let raw = String(number).replace(/[+\s]/g,"");
-  // Agar 10 digit Indian number hai, 91 lagao
   if (raw.length === 10 && !raw.startsWith("91")) raw = "91" + raw;
-  // Agar pehle se 91 se shuru hai (12 digits) — theek hai
   console.log(`[DEEP API] Querying: ${raw}`);
   try {
     const data = await apiFetch(DEEP_API_URL.replace("{number}", raw), 20000);
@@ -708,60 +702,101 @@ async function fetchNumApi(cleanPhone) {
   } catch (e) { console.error("[NUM API]", e.message); return []; }
 }
 
-// ── NEW PRIMARY API PARSER ───────────────────
-// Response: { success, tg_id, number, country, country_code, msg }
-// Same for username AND userid — bas term= mein dono dete hain
-function parseTgPrimaryNew(data, inputTerm) {
-  const phone       = data.number       ? String(data.number).trim()       : null;
-  const tgId        = data.tg_id        ? String(data.tg_id).trim()        : "N/A";
-  const countryCode = data.country_code ? String(data.country_code).trim() : "N/A";
-  const country     = data.country      ? String(data.country).trim()      : null;
-  return { tgId, targetUname: inputTerm, phone, countryCode, country };
+// ── TG API FETCHERS (3 SEPARATE) ──────────────
+
+// API #1: Username search
+async function fetchTgUsername(username) {
+  if (!apiToggle.tg_username.enabled) return null;
+  try {
+    const url = TG_API_USERNAME.replace("{username}", encodeURIComponent(username));
+    console.log(`[TG USERNAME API] Querying: ${url}`);
+    const data = await apiFetch(url, 20000);
+    console.log(`[TG USERNAME API] Response: success=${data && data.status}`);
+    if (data && data.status === true && data.data && data.data.source1 && data.data.source1.records) {
+      const record = data.data.source1.records[0];
+      if (record && record.phone && record.phone !== "N/A") {
+        return {
+          tgId: record.tg_id || "N/A",
+          username: data.target_username || username,
+          phone: record.phone || null,
+          countryCode: record.country_code || "N/A",
+          country: record.country || "N/A",
+        };
+      }
+    }
+    return null;
+  } catch (e) { console.error("[TG USERNAME API]", e.message); return null; }
 }
 
+// API #2: UserID search
+async function fetchTgUserid(userid) {
+  if (!apiToggle.tg_userid.enabled) return null;
+  try {
+    const url = TG_API_USERID.replace("{userid}", encodeURIComponent(userid));
+    console.log(`[TG USERID API] Querying: ${url}`);
+    const data = await apiFetch(url, 20000);
+    console.log(`[TG USERID API] Response: success=${data && data.status}`);
+    if (data && data.status === true) {
+      return {
+        tgId: data.tg_id || userid,
+        username: null,
+        phone: data.phone || null,
+        countryCode: data.country_code || "N/A",
+        country: data.country || "N/A",
+      };
+    }
+    return null;
+  } catch (e) { console.error("[TG USERID API]", e.message); return null; }
+}
+
+// API #3: Primary API (username or userid)
+async function fetchTgPrimary(term) {
+  if (!apiToggle.tg_primary.enabled) return null;
+  try {
+    const url = TG_API_PRIMARY.replace("{term}", encodeURIComponent(term));
+    console.log(`[TG PRIMARY API] Querying: ${url}`);
+    const data = await apiFetch(url, 20000);
+    console.log(`[TG PRIMARY API] Response: success=${data && data.success}`);
+    if (data && data.success === true && data.number && data.number !== "N/A") {
+      return {
+        tgId: data.tg_id || "N/A",
+        username: null,
+        phone: data.number || null,
+        countryCode: data.country_code || "N/A",
+        country: data.country || "N/A",
+      };
+    }
+    return null;
+  } catch (e) { console.error("[TG PRIMARY API]", e.message); return null; }
+}
+
+// ── MASTER TG FETCHER ──────────────────────────
 async function fetchTgData(term) {
   const isUserId = /^\d+$/.test(term);
-  let tgId = "N/A", targetUname = term, phone = null, countryCode = null, country = null, usedFallback = false;
+  let result = null;
 
-  // ── Step 1: New Primary API ───────────────────
-  // Username ya userid — dono same URL se kaam karte hain
-  if (apiToggle.tg_primary.enabled) {
-    try {
-      const url  = TG_PRIMARY_API.replace("{term}", encodeURIComponent(term));
-      console.log(`[TG PRIMARY] Querying: ${url}`);
-      const data = await apiFetch(url, 20000);
-      console.log(`[TG PRIMARY] Response: success=${data && data.success} tg_id=${data && data.tg_id} number=${data && data.number}`);
-      if (data && data.success === true) {
-        const p   = parseTgPrimaryNew(data, term);
-        tgId        = p.tgId;
-        targetUname = p.targetUname;
-        phone       = p.phone && p.phone !== "" && p.phone !== "None" ? p.phone : null;
-        countryCode = p.countryCode;
-        country     = p.country;
-      }
-    } catch (e) { console.error("[TG PRIMARY]", e.message); }
+  // Check custom data first
+  const termKey = term.toLowerCase();
+  if (customTgData.has(termKey)) {
+    return { custom: true, data: customTgData.get(termKey) };
   }
 
-  // ── Step 2: Fallback API — agar primary se phone nahi mila ──
-  if (!phone && apiToggle.tg_fallback.enabled) {
-    try {
-      const q    = (term.startsWith("@") || isUserId) ? term : `@${term}`;
-      const data = await apiFetch(TG_FALLBACK_API.replace("{query}", encodeURIComponent(q)), 20000);
-      console.log(`[TG FALLBACK] Response: success=${data && data.success} number=${data && data.number}`);
-      if (data && data.success) {
-        const fp = String(data.number || "").trim();
-        if (fp && fp !== "None" && fp !== "") {
-          usedFallback = true;
-          phone        = fp;
-          countryCode  = String(data.country_code || countryCode || "N/A");
-          country      = data.country ? String(data.country) : country;
-          if (data.tg_id && String(data.tg_id) !== "N/A") tgId = String(data.tg_id);
-        }
-      }
-    } catch (e) { console.error("[TG FALLBACK]", e.message); }
+  // Try APIs in order based on input type
+  if (isUserId) {
+    // Try UserID API first, then Primary
+    result = await fetchTgUserid(term);
+    if (!result || !result.phone) {
+      result = await fetchTgPrimary(term);
+    }
+  } else {
+    // Try Username API first, then Primary
+    result = await fetchTgUsername(term);
+    if (!result || !result.phone) {
+      result = await fetchTgPrimary(term);
+    }
   }
 
-  return { tgId, targetUname, phone, countryCode, country, usedFallback };
+  return { custom: false, data: result };
 }
 
 // ══════════════════════════════════════════════
@@ -769,7 +804,14 @@ async function fetchTgData(term) {
 // ══════════════════════════════════════════════
 
 async function handleNumber(chatId, number, userMsgId = null, userId = null) {
-  // Check if BOTH num + deep are off
+  // Check custom number data first
+  const numKey = number.trim().toLowerCase();
+  if (customNumData.has(numKey)) {
+    if (userId) dbIncrSearch(userId);
+    await sendDataFound(chatId, userMsgId, customNumData.get(numKey));
+    return;
+  }
+
   if (!apiToggle.num.enabled && !apiToggle.deep.enabled) {
     await sendDataNotFound(chatId, userMsgId,
       `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.num.offMsg}`
@@ -782,7 +824,6 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
     let clean = number.trim().replace(/\s/g,"").replace("+91","");
     if (clean.startsWith("91") && clean.length > 10) clean = clean.slice(2);
 
-    // Run both APIs in parallel
     const [records, deepApiRaw] = await Promise.all([
       fetchNumApi(clean),
       fetchDeepApi(number),
@@ -802,13 +843,11 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
 
     if (userId) dbIncrSearch(userId);
 
-    // Combine: num result first, then deep data below with clear separator
     let full = "";
     if (records.length && apiToggle.num.enabled) {
       full += formatNumResult(records, clean);
     }
     if (deepFmt) {
-      // deepFmt already starts with \n\n separator from formatDeepResult
       full += deepFmt;
     }
 
@@ -824,28 +863,19 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
   term = term.trim().replace(/^@/,"");
   if (!term) { await sendDataNotFound(chatId, userMsgId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438"); return; }
 
-  const termKey = term.toLowerCase();
-  if (customTgData.has(termKey)) {
-    if (userId) dbIncrSearch(userId);
-    await sendDataFound(chatId, userMsgId, customTgData.get(termKey));
-    return;
-  }
-
-  if (!apiToggle.tg_primary.enabled && !apiToggle.tg_fallback.enabled) {
-    await sendDataNotFound(chatId, userMsgId,
-      `╔══════════════════════╗\n║  ⚠️  API OFFLINE      ║\n╠══════════════════════╣\n${apiToggle.tg_primary.offMsg}\n╚══════════════════════╝`
-    );
-    return;
-  }
-
-  const isUserId  = /^\d+$/.test(term);
-  const statusMsg = await sendPlain(chatId, `🔍  Searching TG ${isUserId ? "UserID" : "Username"}: ${isUserId ? "#" : "@"}${term} ...`);
+  const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
 
   try {
-    const { tgId, targetUname, phone, countryCode, usedFallback } = await fetchTgData(term);
+    const { custom, data } = await fetchTgData(term);
     deleteMessage(chatId, statusMsg.message_id);
 
-    if (!phone && tgId === "N/A") {
+    if (custom) {
+      if (userId) dbIncrSearch(userId);
+      await sendDataFound(chatId, userMsgId, data);
+      return;
+    }
+
+    if (!data || !data.phone) {
       await sendDataNotFound(chatId, userMsgId,
         `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Data nahi mila\n╚══════════════════════╝`
       );
@@ -854,26 +884,28 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
 
     if (userId) dbIncrSearch(userId);
 
-    // ── USERNAME: wahi dikhao jo user ne bheja — @ prefix ke saath ──
-    // Country/source/extra fields nahi dikhane
     const originalInput = /^\d+$/.test(term) ? term : `@${term}`;
 
     let tgBlock =
       `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n` +
-      `${cbMd("💻 Username    ", originalInput)}\n` +
-      `${cbMd("🆔 Telegram ID ", tgId)}\n` +
-      `${cbMd("📞 Phone       ", phone || "N/A")}\n` +
-      `${cbMd("🌍 Country Code", countryCode && !["N/A","India","IN","91"].includes(countryCode) ? countryCode : countryCode)}\n` +
+      `${cbMd("💻 Input       ", originalInput)}\n` +
+      `${cbMd("🆔 Telegram ID ", data.tgId || "N/A")}\n` +
+      `${cbMd("📞 Phone       ", data.phone || "N/A")}\n` +
+      `${cbMd("🌍 Country     ", data.country || "N/A")}\n` +
+      `${cbMd("📱 Country Code", data.countryCode || "N/A")}\n` +
       `└─────────────────────────┘\n`;
 
-    if (phone) {
-      let cleanPhone = phone.replace(/[+\s]/g,"");
+    if (data.phone) {
+      let cleanPhone = data.phone.replace(/[+\s]/g,"");
       if (cleanPhone.startsWith("91") && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(2);
-      const [numRes, deepApiRaw] = await Promise.all([fetchNumApi(cleanPhone), fetchDeepApi(phone)]);
+      const [numRes, deepApiRaw] = await Promise.all([
+        fetchNumApi(cleanPhone),
+        fetchDeepApi(data.phone),
+      ]);
       if (numRes.length && apiToggle.num.enabled) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
       const dp = parseDeepApiResponse(deepApiRaw);
       const df = formatDeepResult(dp, cleanPhone);
-      if (df) tgBlock += df;  // formatDeepResult already adds \n\n prefix
+      if (df) tgBlock += df;
     }
 
     await sendDataFound(chatId, userMsgId, tgBlock);
@@ -1024,12 +1056,13 @@ async function handleCallback(cb) {
   if (data === "menu_adminlist")  { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST   ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
   if (data === "menu_broadcast")  { userState.set(from.id, "broadcast"); await sendPlain(chatId, "📢  Broadcast message type karo:"); return; }
   if (data === "menu_setcustomtg"){ userState.set(from.id, "setcustomtg_step1"); await sendPlain(chatId, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming"); return; }
+  if (data === "menu_setcustomnum"){ userState.set(from.id, "setcustomnum_step1"); await sendPlain(chatId, "📥  Number bhejo jiska data set karna hai\n📌  Example: 9876543210"); return; }
   if (data === "menu_api")        { await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() }); return; }
   if (data === "menu_adminpanel") {
     await sendPlain(chatId,
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
       "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
-      "✏️ /setcustomtg  🗑️ /delcustomtg\n📋 /listcustomtg  🔌 /apimanager\n╚══════════════════════════╝"
+      "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚══════════════════════════╝"
     );
     return;
   }
@@ -1052,7 +1085,7 @@ async function handleUpdate(update) {
     if (!text) return;
 
     if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin",
-        "/setcustomtg","/delcustomtg","/listcustomtg","/dbbackup","/apimanager"].some(c => text.toLowerCase().startsWith(c))) {
+        "/setcustomtg","/delcustomtg","/setcustomnum","/delcustomnum","/listcustom","/dbbackup","/apimanager"].some(c => text.toLowerCase().startsWith(c))) {
       return await handleAdminText(chatId, from.id, text);
     }
 
@@ -1103,7 +1136,16 @@ async function handleUpdate(update) {
       const targetKey = choice.split("::")[1];
       customTgData.set(targetKey, text.trim());
       dbSaveData(`customtg:${targetKey}`, { username: targetKey, data: text.trim() });
-      await sendPlain(chatId, `✅  Custom data set!\n👤 Key: ${targetKey}`);
+      await sendPlain(chatId, `✅  Custom TG data set!\n👤 Key: ${targetKey}`);
+    } else if (choice === "setcustomnum_step1" && _isAdmin) {
+      userState.set(from.id, `setcustomnum_step2::${text.trim().toLowerCase()}`);
+      await sendPlain(chatId, `✅  Number: ${text.trim()}\n\n📥  Ab custom data bhejo:`);
+      return;
+    } else if (typeof choice === "string" && choice.startsWith("setcustomnum_step2::") && _isAdmin) {
+      const targetKey = choice.split("::")[1];
+      customNumData.set(targetKey, text.trim());
+      dbSaveData(`customnum:${targetKey}`, { number: targetKey, data: text.trim() });
+      await sendPlain(chatId, `✅  Custom Number data set!\n📱 Key: ${targetKey}`);
     }
 
     userState.delete(from.id);
@@ -1112,7 +1154,7 @@ async function handleUpdate(update) {
 
 async function handleAdminText(chatId, userId, text) {
   const lower = text.toLowerCase();
-  if (lower === "/admin")        { await sendPlain(chatId, "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n✏️ /setcustomtg  🗑️ /delcustomtg\n📋 /listcustomtg  🔌 /apimanager\n╚══════════════════════════╝"); return; }
+  if (lower === "/admin")        { await sendPlain(chatId, "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚══════════════════════════╝"); return; }
   if (lower === "/apimanager")   { await sendPlain(chatId, apiManagerText(), { reply_markup: apiManagerKb() }); return; }
   if (lower.startsWith("/broadcast")) {
     const msgText = text.slice("/broadcast".length).trim();
@@ -1152,23 +1194,51 @@ async function handleAdminText(chatId, userId, text) {
     const customText = text.trim().slice(parts[0].length + parts[1].length + 2).trim();
     customTgData.set(target, customText);
     dbSaveData(`customtg:${target}`, { username: target, data: customText });
-    await sendPlain(chatId, `✅  Custom data set!\n👤 Key: ${target}`);
+    await sendPlain(chatId, `✅  Custom TG data set!\n👤 Key: ${target}`);
     return;
   }
   if (lower.startsWith("/delcustomtg")) {
     const parts = text.trim().split(/\s+/);
     if (parts.length < 2) { await sendPlain(chatId, "❌  Usage: /delcustomtg @username"); return; }
     const target = parts[1].replace(/^@/,"").toLowerCase();
-    if (customTgData.has(target)) { customTgData.delete(target); await sendPlain(chatId, `✅  ${target} ka custom data delete ho gaya.`); }
-    else { await sendPlain(chatId, `⚠️  ${target} ka koi custom data nahi mila.`); }
+    if (customTgData.has(target)) { customTgData.delete(target); await sendPlain(chatId, `✅  ${target} ka custom TG data delete ho gaya.`); }
+    else { await sendPlain(chatId, `⚠️  ${target} ka koi custom TG data nahi mila.`); }
     return;
   }
-  if (lower === "/listcustomtg") {
-    if (!customTgData.size) { await sendPlain(chatId, "📋  Koi custom TG data set nahi hai."); return; }
-    const lines = ["╔══════════════════════════╗","║  📋  CUSTOM TG DATA LIST  ║","╠══════════════════════════╣"];
-    for (const [k,v] of customTgData) lines.push(`👤 ${k}\n   📝 ${v.slice(0,60)}${v.length>60?"...":""}`);
-    lines.push("╚══════════════════════════╝");
-    await sendPlain(chatId, lines.join("\n"));
+  if (lower.startsWith("/setcustomnum")) {
+    const parts = text.trim().split(/\s+/, 3);
+    if (parts.length < 3) { await sendPlain(chatId, "❌  Usage: /setcustomnum <number> <custom_text>"); return; }
+    const target     = parts[1].toLowerCase();
+    const customText = text.trim().slice(parts[0].length + parts[1].length + 2).trim();
+    customNumData.set(target, customText);
+    dbSaveData(`customnum:${target}`, { number: target, data: customText });
+    await sendPlain(chatId, `✅  Custom Number data set!\n📱 Key: ${target}`);
+    return;
+  }
+  if (lower.startsWith("/delcustomnum")) {
+    const parts = text.trim().split(/\s+/);
+    if (parts.length < 2) { await sendPlain(chatId, "❌  Usage: /delcustomnum <number>"); return; }
+    const target = parts[1].toLowerCase();
+    if (customNumData.has(target)) { customNumData.delete(target); await sendPlain(chatId, `✅  ${target} ka custom Number data delete ho gaya.`); }
+    else { await sendPlain(chatId, `⚠️  ${target} ka koi custom Number data nahi mila.`); }
+    return;
+  }
+  if (lower === "/listcustom") {
+    let output = "╔══════════════════════════╗\n║  📋  CUSTOM DATA LIST   ║\n╠══════════════════════════╣\n\n";
+    output += "🔹 CUSTOM TG DATA:\n";
+    if (customTgData.size) {
+      for (const [k,v] of customTgData) output += `  👤 ${k}\n     📝 ${v.slice(0,50)}${v.length>50?"...":""}\n`;
+    } else {
+      output += "  ❌ Koi custom TG data nahi\n";
+    }
+    output += "\n🔹 CUSTOM NUMBER DATA:\n";
+    if (customNumData.size) {
+      for (const [k,v] of customNumData) output += `  📱 ${k}\n     📝 ${v.slice(0,50)}${v.length>50?"...":""}\n`;
+    } else {
+      output += "  ❌ Koi custom Number data nahi\n";
+    }
+    output += "╚══════════════════════════╝";
+    await sendPlain(chatId, output);
     return;
   }
 }
