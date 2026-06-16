@@ -45,9 +45,40 @@ const customNumData = new Map();
 
 // ── PREMIUM EMOJI TOKENS ──────────────────────
 const EMOJI_TOKENS = {
-  shield: "4958900559139570572",
-  minus:  "6316341362635578009",
+  shield: "4958900559139570572",   // 🛡️
+  minus:  "6316341362635578009",   // ➖
+  check:  "6071022434234930063",   // ✅
+  user:   "6158690786989844701",   // 👤
+  clock:  "6158873829906063765",   // 🕞
 };
+
+// Map normal emoji chars to their custom emoji tags (HTML)
+const EMOJI_MAP = {
+  "🛡️": `<emoji id="${EMOJI_TOKENS.shield}">🛡️</emoji>`,
+  "➖": `<emoji id="${EMOJI_TOKENS.minus}">➖</emoji>`,
+  "✅": `<emoji id="${EMOJI_TOKENS.check}">✅</emoji>`,
+  "👤": `<emoji id="${EMOJI_TOKENS.user}">👤</emoji>`,
+  "🕞": `<emoji id="${EMOJI_TOKENS.clock}">🕞</emoji>`,
+};
+
+// Helper to convert a text with normal emojis to HTML with custom emoji tags
+function applyPremiumEmojis(text) {
+  let result = text;
+  for (const [emoji, tag] of Object.entries(EMOJI_MAP)) {
+    result = result.split(emoji).join(tag);
+  }
+  return result;
+}
+
+// HTML escaping
+function escHtml(text) {
+  if (text == null) return "";
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 // ── API TOGGLE SYSTEM ─────────────────────────
 const apiToggle = {
@@ -174,25 +205,40 @@ async function tgApi(method, body = {}) {
   } catch (e) { console.error(`[TG ${method}]`, e.message); return null; }
 }
 
-function escMd(text) {
-  if (text == null) return "";
-  return String(text).replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");
-}
-function cbMd(label, value) {
-  const v = (value != null ? String(value).trim() : "");
-  if (v && !["N/A","","None","null","nan","undefined"].includes(v))
-    return `${escMd(label)}: \`${escMd(v)}\``;
-  return `${escMd(label)}: ❌ N/A`;
+// Helper to send messages with HTML and premium emojis
+async function sendHtml(chat_id, text, extra = {}) {
+  const htmlText = applyPremiumEmojis(text);
+  return tgApi("sendMessage", {
+    chat_id,
+    text: htmlText,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...extra
+  });
 }
 
-const sendMessage     = (chat_id, text, extra = {}) => tgApi("sendMessage",     { chat_id, text, parse_mode: "MarkdownV2", disable_web_page_preview: true, ...extra });
-const editMessageText = (chat_id, message_id, text, extra = {}) => tgApi("editMessageText", { chat_id, message_id, text, parse_mode: "MarkdownV2", disable_web_page_preview: true, ...extra });
+async function editHtml(chat_id, message_id, text, extra = {}) {
+  const htmlText = applyPremiumEmojis(text);
+  return tgApi("editMessageText", {
+    chat_id,
+    message_id,
+    text: htmlText,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...extra
+  });
+}
+
+const sendMessage     = sendHtml;
+const editMessageText = editHtml;
 const deleteMessage   = (chat_id, message_id) => tgApi("deleteMessage", { chat_id, message_id });
 const answerCallback  = (callback_query_id, text = "", show_alert = false) => tgApi("answerCallbackQuery", { callback_query_id, text, show_alert });
 const getChatMember   = (chat_id, user_id) => tgApi("getChatMember", { chat_id, user_id });
 const setMyCommands   = (commands) => tgApi("setMyCommands", { commands });
 const setWebhook      = (url)      => tgApi("setWebhook",    { url, drop_pending_updates: true });
-const sendPlain = (chat_id, text, extra = {}) => tgApi("sendMessage", { chat_id, text, disable_web_page_preview: true, ...extra });
+const sendPlain = async (chat_id, text, extra = {}) => {
+  return sendHtml(chat_id, text, extra);
+};
 
 async function sendDataNotFound(chatId, userMsgId, notFoundText) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
@@ -207,7 +253,8 @@ async function sendDataFound(chatId, userMsgId, text) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
   const res = await sendMessage(chatId, text, extra);
   if (!res) {
-    const plain = text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "");
+    // fallback: strip HTML tags and send plain
+    const plain = text.replace(/<[^>]*>/g, "");
     await sendPlain(chatId, plain, extra);
   }
   return res;
@@ -253,18 +300,29 @@ async function sendJoinPrompt(chatId) {
 
 // ── MENUS ─────────────────────────────────────
 const MAIN_MENU_TEXT =
-  "╔══════════════════════════╗\n║  ⚡️  R T F   B O T  ⚡️   ║\n╠══════════════════════════╣\n" +
-  "🟢  Status  : ONLINE\n👑  Owner   : @RTFGAMMING\n🔥  Version : v3.0\n" +
-  "╠══════════════════════════╣\n📌  Neeche se option chuno:\n╚══════════════════════════╝";
+  "╔══════════════════════════╗\n" +
+  "║  ⚡️  R T F   B O T  ⚡️   ║\n" +
+  "╠══════════════════════════╣\n" +
+  "🟢  Status  : ONLINE\n" +
+  "👑  Owner   : @RTFGAMMING\n" +
+  "🔥  Version : v3.0\n" +
+  "╠══════════════════════════╣\n" +
+  "📌  Neeche se option chuno:\n" +
+  "╚══════════════════════════╝";
 
 const HELP_TEXT =
-  "╔══════════════════════════╗\n║  📖  B O T   H E L P    ║\n╠══════════════════════════╣\n" +
-  "📞  /num <number>\n   Example: /num 9876543210\n\n" +
-  "🔎  /tg <username ya userid>\n   Example: /tg rtfgamming\n   Example: /tg 8518042438\n\n" +
-  "🪪  /adhar <aadhaar_no>\n   Example: /adhar 598229659586\n\n" +
-  "💳  /upi <upi_id>\n   Example: /upi 70497398@axl\n\n" +
-  "🚗  /vehicle <reg_number>\n   Example: /vehicle MH02FZ0555\n\n" +
-  "🏠 /start  ❓ /help\n╠══════════════════════════╣\n👑  Owner : @RTFGAMMING\n╚══════════════════════════╝";
+  "╔══════════════════════════╗\n" +
+  "║  📖  B O T   H E L P    ║\n" +
+  "╠══════════════════════════╣\n" +
+  "📞  /num &lt;number&gt;\n   Example: /num 9876543210\n\n" +
+  "🔎  /tg &lt;username ya userid&gt;\n   Example: /tg rtfgamming\n   Example: /tg 8518042438\n\n" +
+  "🪪  /adhar &lt;aadhaar_no&gt;\n   Example: /adhar 598229659586\n\n" +
+  "💳  /upi &lt;upi_id&gt;\n   Example: /upi 70497398@axl\n\n" +
+  "🚗  /vehicle &lt;reg_number&gt;\n   Example: /vehicle MH02FZ0555\n\n" +
+  "🏠 /start  ❓ /help\n" +
+  "╠══════════════════════════╣\n" +
+  "👑  Owner : @RTFGAMMING\n" +
+  "╚══════════════════════════╝";
 
 function mainMenuKb() {
   return { inline_keyboard: [
@@ -324,7 +382,7 @@ function apiManagerText() {
 }
 
 // ══════════════════════════════════════════════
-//  FORMAT HELPERS
+//  FORMAT HELPERS (ALL HTML)
 // ══════════════════════════════════════════════
 
 function extractRecords(data) {
@@ -350,17 +408,20 @@ function formatNumResult(records, number) {
   const colors = ["🔴","🟠","🟡","🟢","🔵"];
   let out =
     `┌─────────────────────────┐\n│  📞  NUMBER INFO         │\n├─────────────────────────┤\n` +
-    `📱  Number  : \`${escMd(number)}\`\n📊  Records : ${Math.min(records.length,5)} found\n\n`;
+    `📱  Number  : <code>${escHtml(number)}</code>\n📊  Records : ${Math.min(records.length,5)} found\n\n`;
   records.slice(0,5).forEach((r,i) => {
     const dot = colors[i % colors.length];
     out +=
       `${dot}━━━ RECORD ${i+1} ━━━${dot}\n` +
-      `${cbMd("👤 Name   ",r.name)}\n${cbMd("👨 Father ",r.fname)}\n` +
-      `${cbMd("📍 Address",r.address)}\n${cbMd("📡 Circle ",r.circle)}\n` +
-      `${cbMd("☎️  Alt Num",r.alt)}\n${cbMd("🪪 Aadhar ",r.aadhar)}\n` +
-      `${cbMd("✉️  Email  ",r.email)}\n\n`;
+      `<b>👤 Name</b>   : <code>${escHtml(r.name)}</code>\n` +
+      `<b>👨 Father</b> : <code>${escHtml(r.fname)}</code>\n` +
+      `<b>📍 Address</b> : <code>${escHtml(r.address)}</code>\n` +
+      `<b>📡 Circle</b> : <code>${escHtml(r.circle)}</code>\n` +
+      `<b>☎️  Alt Num</b> : <code>${escHtml(r.alt)}</code>\n` +
+      `<b>🪪 Aadhar</b> : <code>${escHtml(r.aadhar)}</code>\n` +
+      `<b>✉️  Email</b>  : <code>${escHtml(r.email)}</code>\n\n`;
   });
-  out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
+  out += `└─────────────────────────┘\n👑  ${escHtml(OWNER)}  \\|  ⚡ ACTIVE`;
   return out;
 }
 
@@ -423,54 +484,54 @@ function formatDeepResult(parsed, queryNumber) {
     `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `│  🕵️  D E E P   I N T E L   │\n` +
     `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-    `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
+    `🔢  Query : <code>${escHtml(queryNumber)}</code>\n\n`;
 
   if (parsed.full_name || parsed.name || parsed.surname || parsed.father || parsed.gender) {
     text += `👤━━━ IDENTITY ━━━👤\n`;
-    if (parsed.full_name) text += `${cbMd("🧑 Full Name  ", parsed.full_name)}\n`;
+    if (parsed.full_name) text += `<b>🧑 Full Name</b>  : <code>${escHtml(parsed.full_name)}</code>\n`;
     if (parsed.name || parsed.surname) {
       const nm = [parsed.name, parsed.surname].filter(Boolean).join(" ");
-      text += `${cbMd("🏷️  Name      ", nm)}\n`;
+      text += `<b>🏷️  Name</b>      : <code>${escHtml(nm)}</code>\n`;
     }
-    if (parsed.father) text += `${cbMd("👨 Father    ", parsed.father)}\n`;
-    if (parsed.gender) text += `${cbMd("⚧️  Gender    ", parsed.gender)}\n`;
+    if (parsed.father) text += `<b>👨 Father</b>    : <code>${escHtml(parsed.father)}</code>\n`;
+    if (parsed.gender) text += `<b>⚧️  Gender</b>    : <code>${escHtml(parsed.gender)}</code>\n`;
     text += "\n";
   }
 
   if (parsed.mobiles.length) {
     const unique = [...new Set(parsed.mobiles)];
-    text += `📞━━━ PHONES \\(${unique.length}\\) ━━━📞\n`;
+    text += `📞━━━ PHONES (${unique.length}) ━━━📞\n`;
     const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","🔘","⚪"];
     unique.forEach((mob, i) => {
-      text += `${colors[i % colors.length]}  \`${escMd(mob)}\`\n`;
+      text += `${colors[i % colors.length]}  <code>${escHtml(mob)}</code>\n`;
     });
     text += "\n";
   }
 
   if (parsed.addresses.length) {
     const unique = [...new Set(parsed.addresses)];
-    text += `📍━━━ ADDRESSES \\(${unique.length}\\) ━━━📍\n`;
-    unique.forEach(addr => { text += `🔸  ${escMd(addr)}\n`; });
+    text += `📍━━━ ADDRESSES (${unique.length}) ━━━📍\n`;
+    unique.forEach(addr => { text += `🔸  ${escHtml(addr)}\n`; });
     text += "\n";
   }
 
   if (parsed.region) {
-    text += `📡━━━ NETWORK ━━━📡\n${cbMd("📶 Region", parsed.region)}\n\n`;
+    text += `📡━━━ NETWORK ━━━📡\n<b>📶 Region</b> : <code>${escHtml(parsed.region)}</code>\n\n`;
   }
 
   if (parsed.facebook || parsed.country) {
     text += `🌐━━━ SOCIAL ━━━🌐\n`;
-    if (parsed.facebook) text += `${cbMd("📘 Facebook", parsed.facebook)}\n`;
-    if (parsed.country)  text += `${cbMd("🌍 Country ", parsed.country)}\n`;
+    if (parsed.facebook) text += `<b>📘 Facebook</b> : <code>${escHtml(parsed.facebook)}</code>\n`;
+    if (parsed.country)  text += `<b>🌍 Country</b> : <code>${escHtml(parsed.country)}</code>\n`;
     text += "\n";
   }
 
-  text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
+  text += `👑  ${escHtml(OWNER)}  \\|  ⚡ DEEP INTEL`;
   return text;
 }
 
 // ══════════════════════════════════════════════
-//  AADHAAR FORMAT
+//  AADHAAR FORMAT (HTML)
 // ══════════════════════════════════════════════
 
 function formatAdharResult(data, adharNumber) {
@@ -483,46 +544,46 @@ function formatAdharResult(data, adharNumber) {
 
     let out =
       `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
-      `🔢  Aadhaar     : \`${escMd(adharNumber)}\`\n` +
-      `${cbMd("🪪  RC ID       ", data.ration_card_id)}\n\n`;
+      `🔢  Aadhaar     : <code>${escHtml(adharNumber)}</code>\n` +
+      `<b>🪪  RC ID</b>       : <code>${escHtml(data.ration_card_id)}</code>\n\n`;
 
     if (Object.keys(card).length) {
       out += `📋━━━ RATION CARD ━━━📋\n`;
-      if (card["Card Type"])       out += `${cbMd("📌 Card Type   ", card["Card Type"])}\n`;
-      if (card["Scheme"])          out += `${cbMd("📋 Scheme      ", card["Scheme"])}\n`;
-      if (card["State"])           out += `${cbMd("🗺️  State       ", card["State"])}\n`;
-      if (card["District"])        out += `${cbMd("📍 District    ", card["District"])}\n`;
-      if (card["Issue Date"])      out += `${cbMd("📅 Issue Date  ", card["Issue Date"])}\n`;
-      if (card["Home FPS"])        out += `${cbMd("🏪 Home FPS    ", card["Home FPS"])}\n`;
-      if (card["Address"] && card["Address"] !== "null") out += `${cbMd("🏠 Address     ", card["Address"])}\n`;
+      if (card["Card Type"])       out += `<b>📌 Card Type</b>   : <code>${escHtml(card["Card Type"])}</code>\n`;
+      if (card["Scheme"])          out += `<b>📋 Scheme</b>      : <code>${escHtml(card["Scheme"])}</code>\n`;
+      if (card["State"])           out += `<b>🗺️  State</b>       : <code>${escHtml(card["State"])}</code>\n`;
+      if (card["District"])        out += `<b>📍 District</b>    : <code>${escHtml(card["District"])}</code>\n`;
+      if (card["Issue Date"])      out += `<b>📅 Issue Date</b>  : <code>${escHtml(card["Issue Date"])}</code>\n`;
+      if (card["Home FPS"])        out += `<b>🏪 Home FPS</b>    : <code>${escHtml(card["Home FPS"])}</code>\n`;
+      if (card["Address"] && card["Address"] !== "null") out += `<b>🏠 Address</b>     : <code>${escHtml(card["Address"])}</code>\n`;
       out += "\n";
     }
 
     if (members.length) {
-      out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
+      out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS (${members.length}) ━━━👨‍👩‍👧‍👦\n`;
       const genderIcon = g => (g||"").toLowerCase() === "f" ? "👩" : (g||"").toLowerCase() === "m" ? "👨" : "🧑";
       const ekyc = s => s === "Y" ? "✅" : "❌";
       const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"];
       members.forEach((m, i) => {
         const dot = colors[i % colors.length];
         out +=
-          `${dot}━━ ${i+1}\\. ${escMd(m.member_name || "N/A")} ${genderIcon(m.gender)}\n` +
-          `   📋 Relation  : ${escMd(m.relationship || "N/A")}\n` +
-          `   🆔 UID       : \`${escMd(m.uid_masked || "N/A")}\`\n` +
+          `${dot}━━ ${i+1}. ${escHtml(m.member_name || "N/A")} ${genderIcon(m.gender)}\n` +
+          `   📋 Relation  : ${escHtml(m.relationship || "N/A")}\n` +
+          `   🆔 UID       : <code>${escHtml(m.uid_masked || "N/A")}</code>\n` +
           `   ✅ eKYC      : ${ekyc(m.ekyc_status)}\n` +
-          `   📅 Updated   : ${escMd(m.cr_last_updated || "N/A")}\n\n`;
+          `   📅 Updated   : ${escHtml(m.cr_last_updated || "N/A")}\n\n`;
       });
     }
 
     if (monthly.length) {
       out += `📊━━━ RECENT MONTHS ━━━📊\n`;
       monthly.slice(0,3).forEach(m => {
-        out += `📅 ${escMd(m.month)}  \\|  👥 Members: ${escMd(m.member_count)}\n`;
+        out += `📅 ${escHtml(m.month)}  \\|  👥 Members: ${escHtml(m.member_count)}\n`;
       });
       out += "\n";
     }
 
-    out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
+    out += `└─────────────────────────┘\n👑  ${escHtml(OWNER)}  \\|  ⚡ ACTIVE`;
     return out;
   } catch (e) { console.error("[formatAdhar]", e.message); return null; }
 }
@@ -537,24 +598,29 @@ function formatUpiResult(data, upiId) {
   const branch = val(ifscD.BRANCH); const address = val(ifscD.ADDRESS); const city = val(ifscD.CITY);
   const district = val(ifscD.DISTRICT); const state = val(ifscD.STATE); const contact = val(ifscD.CONTACT);
   const rtgs = ifscD.RTGS; const neft = ifscD.NEFT; const imps = ifscD.IMPS; const upiSup = ifscD.UPI;
-  let lines = ["┌─────────────────────────┐","│  💳  UPI LOOKUP          │","├─────────────────────────┤", cbMd("💳 UPI ID      ",upiId)];
-  if (name)     lines.push(cbMd("👤 Name        ",name));
-  if (username) lines.push(cbMd("🔖 Username    ",username));
+  let lines = [
+    "┌─────────────────────────┐",
+    "│  💳  UPI LOOKUP          │",
+    "├─────────────────────────┤",
+    `<b>💳 UPI ID</b>      : <code>${escHtml(upiId)}</code>`
+  ];
+  if (name)     lines.push(`<b>👤 Name</b>        : <code>${escHtml(name)}</code>`);
+  if (username) lines.push(`<b>🔖 Username</b>    : <code>${escHtml(username)}</code>`);
   lines.push(`✅ Valid        : ${valid ? "✅ YES" : "❌ NO"}`);
-  if (accType)  lines.push(cbMd("🏦 Account Type",accType));
-  if (bank)     lines.push(cbMd("🏛️  Bank        ",bank));
-  if (bankType) lines.push(cbMd("📂 Bank Type   ",bankType));
-  if (ifsc)     lines.push(cbMd("🔢 IFSC        ",ifsc));
+  if (accType)  lines.push(`<b>🏦 Account Type</b> : <code>${escHtml(accType)}</code>`);
+  if (bank)     lines.push(`<b>🏛️  Bank</b>        : <code>${escHtml(bank)}</code>`);
+  if (bankType) lines.push(`<b>📂 Bank Type</b>   : <code>${escHtml(bankType)}</code>`);
+  if (ifsc)     lines.push(`<b>🔢 IFSC</b>        : <code>${escHtml(ifsc)}</code>`);
   if (isMerchant  != null) lines.push(`🏪 Merchant    : ${tick(isMerchant)}`);
-  if (merchantVer != null) lines.push(`✔️  Merch\\.Verif : ${tick(merchantVer)}`);
+  if (merchantVer != null) lines.push(`✔️  Merch.Verif : ${tick(merchantVer)}`);
   if ([branch,address,city,district,state,contact].some(Boolean)) {
     lines.push("├─────────────────────────┤","│  🏦  IFSC DETAILS        │","├─────────────────────────┤");
-    if (branch)   lines.push(cbMd("🏢 Branch      ",branch));
-    if (address)  lines.push(cbMd("📍 Address     ",address));
-    if (city)     lines.push(cbMd("🏙️  City        ",city));
-    if (district) lines.push(cbMd("📍 District    ",district));
-    if (state)    lines.push(cbMd("🗺️  State       ",state));
-    if (contact)  lines.push(cbMd("📞 Contact     ",contact));
+    if (branch)   lines.push(`<b>🏢 Branch</b>      : <code>${escHtml(branch)}</code>`);
+    if (address)  lines.push(`<b>📍 Address</b>     : <code>${escHtml(address)}</code>`);
+    if (city)     lines.push(`<b>🏙️  City</b>        : <code>${escHtml(city)}</code>`);
+    if (district) lines.push(`<b>📍 District</b>    : <code>${escHtml(district)}</code>`);
+    if (state)    lines.push(`<b>🗺️  State</b>       : <code>${escHtml(state)}</code>`);
+    if (contact)  lines.push(`<b>📞 Contact</b>     : <code>${escHtml(contact)}</code>`);
   }
   if ([rtgs,neft,imps,upiSup].some(v => v != null)) {
     lines.push("├─────────────────────────┤","│  💸  PAYMENT MODES       │","├─────────────────────────┤");
@@ -563,7 +629,7 @@ function formatUpiResult(data, upiId) {
     if (imps   != null) lines.push(`📲 IMPS        : ${tick(imps)}`);
     if (upiSup != null) lines.push(`💳 UPI         : ${tick(upiSup)}`);
   }
-  lines.push("└─────────────────────────┘", `👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`);
+  lines.push("└─────────────────────────┘", `👑  ${escHtml(OWNER)}  \\|  ⚡ ACTIVE`);
   return lines.join("\n");
 }
 
@@ -582,45 +648,50 @@ function formatVehicleResult(data) {
   const puccValid = v(vd.puccValidUpto); const pincode = v(vd.pincode);
   const rtoName = v((typeof vd.rtoData === "object" && vd.rtoData) ? vd.rtoData.rtoName : null);
   const rtoCode = v(vd.rtoCode); const isComm = vd.isCommercial;
-  const lines = ["┌────────────────────────────┐","│  🚗  VEHICLE INFO           │","└────────────────────────────┘","🔷━━━ REGISTRATION ━━━🔷"];
-  if (regNo)   lines.push(`🚘  Reg No      : \`${escMd(regNo)}\``);
-  if (regAuth) lines.push(`🏛️   Reg Auth    : \`${escMd(regAuth)}\``);
-  if (regDate) lines.push(`📅  Reg Date    : \`${escMd(regDate)}\``);
-  if (rtoCode) lines.push(`🗂️   RTO Code    : \`${escMd(rtoCode)}\``);
-  if (rtoName) lines.push(`🏢  RTO Name    : \`${escMd(rtoName)}\``);
+  const lines = [
+    "┌────────────────────────────┐",
+    "│  🚗  VEHICLE INFO           │",
+    "└────────────────────────────┘",
+    "🔷━━━ REGISTRATION ━━━🔷"
+  ];
+  if (regNo)   lines.push(`🚘  Reg No      : <code>${escHtml(regNo)}</code>`);
+  if (regAuth) lines.push(`🏛️   Reg Auth    : <code>${escHtml(regAuth)}</code>`);
+  if (regDate) lines.push(`📅  Reg Date    : <code>${escHtml(regDate)}</code>`);
+  if (rtoCode) lines.push(`🗂️   RTO Code    : <code>${escHtml(rtoCode)}</code>`);
+  if (rtoName) lines.push(`🏢  RTO Name    : <code>${escHtml(rtoName)}</code>`);
   if ([father,mob,presentAddr,pincode].some(Boolean)) {
     lines.push("\n🔶━━━ OWNER DETAILS ━━━🔶");
-    if (father)      lines.push(`👨  Father       : \`${escMd(father)}\``);
-    if (mob)         lines.push(`📞  Mobile       : \`${escMd(mob)}\``);
-    if (presentAddr) lines.push(`📍  Address      : \`${escMd(presentAddr)}\``);
-    if (pincode)     lines.push(`📮  Pincode      : \`${escMd(pincode)}\``);
+    if (father)      lines.push(`👨  Father       : <code>${escHtml(father)}</code>`);
+    if (mob)         lines.push(`📞  Mobile       : <code>${escHtml(mob)}</code>`);
+    if (presentAddr) lines.push(`📍  Address      : <code>${escHtml(presentAddr)}</code>`);
+    if (pincode)     lines.push(`📮  Pincode      : <code>${escHtml(pincode)}</code>`);
   }
   if ([mfr,model,variant,fuel,vehClass,cc,seats,mfrYear].some(Boolean)) {
     lines.push("\n🟢━━━ VEHICLE SPECS ━━━🟢");
-    if (mfr)      lines.push(`🏭  Manufacturer : \`${escMd(mfr)}\``);
-    if (model)    lines.push(`🚗  Model        : \`${escMd(model)}\``);
-    if (variant)  lines.push(`⚙️   Variant      : \`${escMd(variant)}\``);
-    if (fuel)     lines.push(`⛽  Fuel Type    : \`${escMd(fuel)}\``);
-    if (vehClass) lines.push(`📋  Class        : \`${escMd(vehClass)}\``);
-    if (vehType)  lines.push(`🔖  Type         : \`${escMd(vehType)}\``);
-    if (mfrYear)  lines.push(`📆  Mfr Year     : \`${escMd(mfrYear)}\``);
-    if (cc)       lines.push(`🔩  Cubic Cap    : \`${escMd(cc)} cc\``);
-    if (seats)    lines.push(`💺  Seats        : \`${escMd(seats)}\``);
+    if (mfr)      lines.push(`🏭  Manufacturer : <code>${escHtml(mfr)}</code>`);
+    if (model)    lines.push(`🚗  Model        : <code>${escHtml(model)}</code>`);
+    if (variant)  lines.push(`⚙️   Variant      : <code>${escHtml(variant)}</code>`);
+    if (fuel)     lines.push(`⛽  Fuel Type    : <code>${escHtml(fuel)}</code>`);
+    if (vehClass) lines.push(`📋  Class        : <code>${escHtml(vehClass)}</code>`);
+    if (vehType)  lines.push(`🔖  Type         : <code>${escHtml(vehType)}</code>`);
+    if (mfrYear)  lines.push(`📆  Mfr Year     : <code>${escHtml(mfrYear)}</code>`);
+    if (cc)       lines.push(`🔩  Cubic Cap    : <code>${escHtml(cc)} cc</code>`);
+    if (seats)    lines.push(`💺  Seats        : <code>${escHtml(seats)}</code>`);
     if (isComm != null) lines.push(`🏪  Commercial   : ${isComm ? "✅ YES" : "❌ NO"}`);
   }
   if ([eng,chassis].some(Boolean)) {
     lines.push("\n🔵━━━ TECHNICAL ━━━🔵");
-    if (eng)     lines.push(`🔧  Engine No    : \`${escMd(eng)}\``);
-    if (chassis) lines.push(`🔩  Chassis No   : \`${escMd(chassis)}\``);
+    if (eng)     lines.push(`🔧  Engine No    : <code>${escHtml(eng)}</code>`);
+    if (chassis) lines.push(`🔩  Chassis No   : <code>${escHtml(chassis)}</code>`);
   }
   if ([financer,insCompany,insUpto,puccValid].some(Boolean)) {
     lines.push("\n🟣━━━ FINANCE & INSURANCE ━━━🟣");
-    if (financer)   lines.push(`💰  Financer     : \`${escMd(financer)}\``);
-    if (insCompany) lines.push(`🛡️   Insurance    : \`${escMd(insCompany)}\``);
-    if (insUpto)    lines.push(`📅  Ins Upto     : \`${escMd(insUpto)}\`${insExpired ? " ❌ EXPIRED" : " ✅ VALID"}`);
-    if (puccValid)  lines.push(`🌿  PUCC Valid   : \`${escMd(puccValid)}\``);
+    if (financer)   lines.push(`💰  Financer     : <code>${escHtml(financer)}</code>`);
+    if (insCompany) lines.push(`🛡️   Insurance    : <code>${escHtml(insCompany)}</code>`);
+    if (insUpto)    lines.push(`📅  Ins Upto     : <code>${escHtml(insUpto)}</code>${insExpired ? " ❌ EXPIRED" : " ✅ VALID"}`);
+    if (puccValid)  lines.push(`🌿  PUCC Valid   : <code>${escHtml(puccValid)}</code>`);
   }
-  lines.push(`\n┌────────────────────────────┐`,`│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │`,"└────────────────────────────┘");
+  lines.push(`\n┌────────────────────────────┐`,`│  👑 ${escHtml(OWNER)}  \\|  ⚡ ACTIVE  │`,"└────────────────────────────┘");
   return lines.join("\n");
 }
 
@@ -631,7 +702,7 @@ async function sendDbBackup(chatId) {
   try {
     const allUsers = await dbGetAllUsers();
     const total    = allUsers.length;
-    if (!total) { await tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: "📭  Database empty hai." }); return; }
+    if (!total) { await editMessageText(chatId, statusMsg.message_id, "📭  Database empty hai."); return; }
     const now    = new Date().toISOString().slice(0,16).replace("T"," ");
     const sorted = [...allUsers].sort((a,b) => (b.total_searches||0) - (a.total_searches||0));
     const totalSearches = allUsers.reduce((s,u) => s + (u.total_searches||0), 0);
@@ -666,11 +737,11 @@ async function sendDbBackup(chatId) {
       await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, ...agentFor(TG_BASE) });
       deleteMessage(chatId, statusMsg.message_id);
     } else {
-      await tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: fullText });
+      await editMessageText(chatId, statusMsg.message_id, fullText);
     }
   } catch (e) {
     console.error("[DB BACKUP]", e);
-    tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: `❌  Backup failed: ${e.message}` });
+    await editMessageText(chatId, statusMsg.message_id, `❌  Backup failed: ${e.message}`);
   }
 }
 
@@ -704,7 +775,6 @@ async function fetchNumApi(cleanPhone) {
 
 // ── TG API FETCHERS (3 SEPARATE) ──────────────
 
-// API #1: Username search
 async function fetchTgUsername(username) {
   if (!apiToggle.tg_username.enabled) return null;
   try {
@@ -728,7 +798,6 @@ async function fetchTgUsername(username) {
   } catch (e) { console.error("[TG USERNAME API]", e.message); return null; }
 }
 
-// API #2: UserID search
 async function fetchTgUserid(userid) {
   if (!apiToggle.tg_userid.enabled) return null;
   try {
@@ -749,7 +818,6 @@ async function fetchTgUserid(userid) {
   } catch (e) { console.error("[TG USERID API]", e.message); return null; }
 }
 
-// API #3: Primary API (username or userid)
 async function fetchTgPrimary(term) {
   if (!apiToggle.tg_primary.enabled) return null;
   try {
@@ -775,21 +843,17 @@ async function fetchTgData(term) {
   const isUserId = /^\d+$/.test(term);
   let result = null;
 
-  // Check custom data first
   const termKey = term.toLowerCase();
   if (customTgData.has(termKey)) {
     return { custom: true, data: customTgData.get(termKey) };
   }
 
-  // Try APIs in order based on input type
   if (isUserId) {
-    // Try UserID API first, then Primary
     result = await fetchTgUserid(term);
     if (!result || !result.phone) {
       result = await fetchTgPrimary(term);
     }
   } else {
-    // Try Username API first, then Primary
     result = await fetchTgUsername(term);
     if (!result || !result.phone) {
       result = await fetchTgPrimary(term);
@@ -804,7 +868,6 @@ async function fetchTgData(term) {
 // ══════════════════════════════════════════════
 
 async function handleNumber(chatId, number, userMsgId = null, userId = null) {
-  // Check custom number data first
   const numKey = number.trim().toLowerCase();
   if (customNumData.has(numKey)) {
     if (userId) dbIncrSearch(userId);
@@ -888,11 +951,11 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
 
     let tgBlock =
       `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n` +
-      `${cbMd("💻 Input       ", originalInput)}\n` +
-      `${cbMd("🆔 Telegram ID ", data.tgId || "N/A")}\n` +
-      `${cbMd("📞 Phone       ", data.phone || "N/A")}\n` +
-      `${cbMd("🌍 Country     ", data.country || "N/A")}\n` +
-      `${cbMd("📱 Country Code", data.countryCode || "N/A")}\n` +
+      `<b>💻 Input</b>       : <code>${escHtml(originalInput)}</code>\n` +
+      `<b>🆔 Telegram ID</b> : <code>${escHtml(data.tgId || "N/A")}</code>\n` +
+      `<b>📞 Phone</b>       : <code>${escHtml(data.phone || "N/A")}</code>\n` +
+      `<b>🌍 Country</b>     : <code>${escHtml(data.country || "N/A")}</code>\n` +
+      `<b>📱 Country Code</b> : <code>${escHtml(data.countryCode || "N/A")}</code>\n` +
       `└─────────────────────────┘\n`;
 
     if (data.phone) {
@@ -1001,7 +1064,7 @@ async function handleCallback(cb) {
       joinCache.set(from.id, { ok: true, ts: Date.now() });
       await answerCallback(cb.id);
       const kb = _isAdmin ? adminMenuKb() : mainMenuKb();
-      await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: MAIN_MENU_TEXT, reply_markup: kb });
+      await editMessageText(chatId, msgId, MAIN_MENU_TEXT, { reply_markup: kb });
     }
     return;
   }
@@ -1013,7 +1076,7 @@ async function handleCallback(cb) {
       apiToggle[key].enabled = !apiToggle[key].enabled;
       const st = apiToggle[key].enabled ? "🟢 ON" : "🔴 OFF";
       await answerCallback(cb.id, `${apiToggle[key].label} ${st}`, true);
-      await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() });
+      await editMessageText(chatId, msgId, apiManagerText(), { reply_markup: apiManagerKb() });
     }
     return;
   }
@@ -1057,7 +1120,7 @@ async function handleCallback(cb) {
   if (data === "menu_broadcast")  { userState.set(from.id, "broadcast"); await sendPlain(chatId, "📢  Broadcast message type karo:"); return; }
   if (data === "menu_setcustomtg"){ userState.set(from.id, "setcustomtg_step1"); await sendPlain(chatId, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming"); return; }
   if (data === "menu_setcustomnum"){ userState.set(from.id, "setcustomnum_step1"); await sendPlain(chatId, "📥  Number bhejo jiska data set karna hai\n📌  Example: 9876543210"); return; }
-  if (data === "menu_api")        { await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() }); return; }
+  if (data === "menu_api")        { await editMessageText(chatId, msgId, apiManagerText(), { reply_markup: apiManagerKb() }); return; }
   if (data === "menu_adminpanel") {
     await sendPlain(chatId,
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
@@ -1116,12 +1179,12 @@ async function handleUpdate(update) {
       const status = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
       let ok = 0, fail = 0;
       for (const uid of uids) {
-        const r = await tgApi("sendMessage", { chat_id: uid, text });
+        const r = await tgApi("sendMessage", { chat_id: uid, text, parse_mode: "HTML" });
         r ? ok++ : fail++;
         await new Promise(r => setTimeout(r, 50));
       }
-      await tgApi("editMessageText", { chat_id: chatId, message_id: status.message_id,
-        text: `╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}` });
+      await editMessageText(chatId, status.message_id,
+        `╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}`);
     }
     else if (choice === "number")  { await handleNumber(chatId, text, msgId, from.id); }
     else if (choice === "tg")      { await handleTg(chatId, text, msgId, from.id); }
@@ -1162,8 +1225,8 @@ async function handleAdminText(chatId, userId, text) {
     const users = await dbGetAllUsers(); const uids = users.map(u => u.user_id);
     const status = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
     let ok = 0, fail = 0;
-    for (const uid of uids) { const r = await tgApi("sendMessage", { chat_id: uid, text: msgText }); r ? ok++ : fail++; await new Promise(r => setTimeout(r, 50)); }
-    await tgApi("editMessageText", { chat_id: chatId, message_id: status.message_id, text: `✅ Delivered: ${ok}\n❌ Failed: ${fail}\n👥 Total: ${uids.length}` });
+    for (const uid of uids) { const r = await tgApi("sendMessage", { chat_id: uid, text: msgText, parse_mode: "HTML" }); r ? ok++ : fail++; await new Promise(r => setTimeout(r, 50)); }
+    await editMessageText(chatId, status.message_id, `✅ Delivered: ${ok}\n❌ Failed: ${fail}\n👥 Total: ${uids.length}`);
     return;
   }
   if (lower === "/users")        { const c = await dbUserCount(); await sendPlain(chatId, `📊  Total Users: ${c}\n🗄️ Source: MongoDB`); return; }
@@ -1258,7 +1321,7 @@ async function handleCommand(msg) {
   if (!match) return;
   const [, cmd, args = ""] = match;
 
-  if      (cmd === "start")   { await tgApi("sendMessage", { chat_id: chatId, text: MAIN_MENU_TEXT, reply_markup: _isAdm ? adminMenuKb() : mainMenuKb() }); }
+  if      (cmd === "start")   { await sendMessage(chatId, MAIN_MENU_TEXT, { reply_markup: _isAdm ? adminMenuKb() : mainMenuKb() }); }
   else if (cmd === "help")    { await sendPlain(chatId, HELP_TEXT); }
   else if (cmd === "num")     { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /num <number>"); return; } await handleNumber(chatId, args.trim(), msgId, from.id); }
   else if (cmd === "tg")      { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /tg <username ya userid>"); return; } await handleTg(chatId, args.trim(), msgId, from.id); }
