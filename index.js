@@ -24,7 +24,7 @@ const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}"
 // New primary TG API — username aur userid dono same URL se
 // term= ke baad username ya userid dono chalte hain
 const TG_PRIMARY_API  = "https://tgtonumanurixx-1jjw.vercel.app?term={term}";
-const TG_FALLBACK_API = "https://rootx-osint.in/?type=tg_num&key=@Clanemain&query={query}";
+const TG_FALLBACK_API = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
 
