@@ -22,10 +22,11 @@ const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare
 const DEEP_API_URL    = "https://all-leak-check-api.vercel.app/api/search?query={number}";
 const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
 
-// ── TG API URLS (3 SEPARATE) ──────────────────
+// ── TG API URLS (4 TOTAL — 3 PRIMARY + 1 FALLBACK) ──
 const TG_API_USERNAME = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
 const TG_API_USERID   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
 const TG_API_PRIMARY  = "https://tgtonumanurixx-1jjw.vercel.app?term={term}";
+const TG_API_FALLBACK = "https://tg2numlifetime.suryahacker.workers.dev/fetch?tgid={query}";
 
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
@@ -75,6 +76,11 @@ const apiToggle = {
     enabled: true,
     label:   "🔎 TG Primary API",
     offMsg:  "❌ TG Primary API unavailable.",
+  },
+  tg_fallback: {
+    enabled: true,
+    label:   "🔎 TG Fallback API",
+    offMsg:  "❌ TG Fallback API unavailable.",
   },
   adhar: {
     enabled: true,
@@ -295,7 +301,7 @@ function adminMenuKb() {
 // ══════════════════════════════════════════════
 //  API MANAGER PANEL
 // ══════════════════════════════════════════════
-const API_KEYS = ["num","deep","tg_username","tg_userid","tg_primary","adhar","upi","vehicle"];
+const API_KEYS = ["num","deep","tg_username","tg_userid","tg_primary","tg_fallback","adhar","upi","vehicle"];
 
 function apiManagerKb() {
   const rows = API_KEYS.map(k => {
@@ -702,7 +708,7 @@ async function fetchNumApi(cleanPhone) {
   } catch (e) { console.error("[NUM API]", e.message); return []; }
 }
 
-// ── TG API FETCHERS (3 SEPARATE) ──────────────
+// ── TG API FETCHERS (4 TOTAL) ──────────────────
 
 // API #1: Username search
 async function fetchTgUsername(username) {
@@ -770,6 +776,59 @@ async function fetchTgPrimary(term) {
   } catch (e) { console.error("[TG PRIMARY API]", e.message); return null; }
 }
 
+// API #4: NEW FALLBACK API (username or @username)
+async function fetchTgFallback(query) {
+  if (!apiToggle.tg_fallback.enabled) return null;
+  try {
+    // Ensure query has @ prefix for username, or keep as-is for userid
+    let formattedQuery = query;
+    if (!/^\d+$/.test(query) && !query.startsWith("@")) {
+      formattedQuery = `@${query}`;
+    }
+    const url = TG_API_FALLBACK.replace("{query}", encodeURIComponent(formattedQuery));
+    console.log(`[TG FALLBACK API] Querying: ${url}`);
+    const data = await apiFetch(url, 20000);
+    console.log(`[TG FALLBACK API] Response:`, data);
+    
+    // Response format: { query, telegram_id, phone, country, developer }
+    if (data && data.phone && data.phone !== "N/A" && data.phone !== "") {
+      // Map country to country code (default +91 if India or unknown)
+      let countryCode = "+91"; // default
+      if (data.country) {
+        const countryMap = {
+          "India": "+91",
+          "US": "+1",
+          "USA": "+1",
+          "United States": "+1",
+          "UK": "+44",
+          "United Kingdom": "+44",
+          "UAE": "+971",
+          "Australia": "+61",
+          "Canada": "+1",
+          // Add more as needed
+        };
+        // Try to match country name (case-insensitive)
+        const countryLower = data.country.toLowerCase();
+        for (const [key, code] of Object.entries(countryMap)) {
+          if (countryLower.includes(key.toLowerCase())) {
+            countryCode = code;
+            break;
+          }
+        }
+      }
+      
+      return {
+        tgId: data.telegram_id || data.query || "N/A",
+        username: data.query || null,
+        phone: data.phone || null,
+        countryCode: countryCode,
+        country: data.country || "N/A",
+      };
+    }
+    return null;
+  } catch (e) { console.error("[TG FALLBACK API]", e.message); return null; }
+}
+
 // ── MASTER TG FETCHER ──────────────────────────
 async function fetchTgData(term) {
   const isUserId = /^\d+$/.test(term);
@@ -783,16 +842,22 @@ async function fetchTgData(term) {
 
   // Try APIs in order based on input type
   if (isUserId) {
-    // Try UserID API first, then Primary
+    // Try UserID API first, then Primary, then Fallback
     result = await fetchTgUserid(term);
     if (!result || !result.phone) {
       result = await fetchTgPrimary(term);
     }
+    if (!result || !result.phone) {
+      result = await fetchTgFallback(term);
+    }
   } else {
-    // Try Username API first, then Primary
+    // Try Username API first, then Primary, then Fallback
     result = await fetchTgUsername(term);
     if (!result || !result.phone) {
       result = await fetchTgPrimary(term);
+    }
+    if (!result || !result.phone) {
+      result = await fetchTgFallback(term);
     }
   }
 
@@ -886,13 +951,13 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
 
     const originalInput = /^\d+$/.test(term) ? term : `@${term}`;
 
+    // FIXED: Show country code instead of full country name
     let tgBlock =
       `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n` +
       `${cbMd("💻 Input       ", originalInput)}\n` +
       `${cbMd("🆔 Telegram ID ", data.tgId || "N/A")}\n` +
       `${cbMd("📞 Phone       ", data.phone || "N/A")}\n` +
-      `${cbMd("🌍 Country     ", data.country || "N/A")}\n` +
-      `${cbMd("📱 Country Code", data.countryCode || "N/A")}\n` +
+      `${cbMd("📱 Country Code", data.countryCode || "+91")}\n` +
       `└─────────────────────────┘\n`;
 
     if (data.phone) {
