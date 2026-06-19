@@ -19,15 +19,9 @@ const OWNER       = "@RTFGAMMING";
 
 // ── API URLs ──────────────────────────────────
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
-const DEEP_API_URL    = "https://all-leak-check-api.vercel.app/api/search?query={number}";
+const TG_API_URL      = "https://tgtonumlifetime.suryahacker.workers.dev/?tg={query}";
+const DEEP_API_URL    = "https://l34k-osint.onrender.com/search?key=4e7feeb644fb638362361a94e7e43691&query={query}";
 const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
-
-// ── TG API URLS (4 TOTAL — 3 PRIMARY + 1 FALLBACK) ──
-const TG_API_USERNAME = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
-const TG_API_USERID   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
-const TG_API_PRIMARY  = "https://tgtonumanurixx-1jjw.vercel.app?term={term}";
-const TG_API_FALLBACK = "https://tgtonumlifetime.suryahacker.workers.dev/?tg={query}";
-
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
 
@@ -59,28 +53,13 @@ const apiToggle = {
   },
   deep: {
     enabled: true,
-    label:   "🔬 Deep Intel API",
+    label:   "🔬 Deep Intel API (new)",
     offMsg:  "❌ Deep data lookup abhi available nahi hai.",
   },
-  tg_username: {
+  tg: {
     enabled: true,
-    label:   "🔎 TG Username API",
-    offMsg:  "❌ TG Username API unavailable.",
-  },
-  tg_userid: {
-    enabled: true,
-    label:   "🔎 TG UserID API",
-    offMsg:  "❌ TG UserID API unavailable.",
-  },
-  tg_primary: {
-    enabled: true,
-    label:   "🔎 TG Primary API",
-    offMsg:  "❌ TG Primary API unavailable.",
-  },
-  tg_fallback: {
-    enabled: true,
-    label:   "🔎 TG Fallback API",
-    offMsg:  "❌ TG Fallback API unavailable.",
+    label:   "🔎 TG → Number API",
+    offMsg:  "❌ TG API unavailable.",
   },
   adhar: {
     enabled: true,
@@ -301,7 +280,7 @@ function adminMenuKb() {
 // ══════════════════════════════════════════════
 //  API MANAGER PANEL
 // ══════════════════════════════════════════════
-const API_KEYS = ["num","deep","tg_username","tg_userid","tg_primary","tg_fallback","adhar","upi","vehicle"];
+const API_KEYS = ["num","deep","tg","adhar","upi","vehicle"];
 
 function apiManagerKb() {
   const rows = API_KEYS.map(k => {
@@ -371,16 +350,17 @@ function formatNumResult(records, number) {
 }
 
 // ══════════════════════════════════════════════
-//  DEEP API PARSER + FORMATTER
+//  DEEP API PARSER + FORMATTER (NEW)
 // ══════════════════════════════════════════════
 
-function parseDeepApiResponse(apiData) {
+function parseNewDeepApiResponse(apiData) {
   try {
-    if (!apiData || apiData.status !== "success") return null;
-    const result = apiData.result;
-    if (!result || result.status !== "success") return null;
-    const dataArr = result.data;
-    if (!Array.isArray(dataArr) || !dataArr.length) return null;
+    if (!apiData || apiData.status !== true) return null;
+    const data = apiData.data;
+    if (!data || !data.source1) return null;
+    const source = data.source1;
+    const records = source.records;
+    if (!Array.isArray(records) || records.length === 0) return null;
 
     const parsed = {
       mobiles:   [],
@@ -388,34 +368,49 @@ function parseDeepApiResponse(apiData) {
       full_name: null,
       father:    null,
       region:    null,
-      facebook:  null,
-      name:      null,
-      surname:   null,
-      gender:    null,
-      country:   null,
     };
 
-    for (const line of dataArr) {
-      if (!line || typeof line !== "string") continue;
-      const sep = line.indexOf(":");
-      if (sep === -1) continue;
-      const key = line.slice(0, sep).trim().toLowerCase();
-      const val = line.slice(sep + 1).trim();
-      if (!val || val === "" || val.includes("0001") || val === "null" || val === "undefined") continue;
+    for (const rec of records) {
+      // Collect all phone fields: Phone, Phone2, Phone3, Phone4, Phone5 ...
+      const phoneFields = ["Phone","Phone2","Phone3","Phone4","Phone5"];
+      for (const field of phoneFields) {
+        const val = rec[field];
+        if (val && typeof val === "string" && val.trim() !== "") {
+          const cleaned = val.trim();
+          if (!parsed.mobiles.includes(cleaned)) parsed.mobiles.push(cleaned);
+        }
+      }
 
-      if      (key === "mobile")          { if (!parsed.mobiles.includes(val)) parsed.mobiles.push(val); }
-      else if (key === "address")         { if (!parsed.addresses.includes(val)) parsed.addresses.push(val); }
-      else if (key === "full name")       { if (!parsed.full_name) parsed.full_name = val; }
-      else if (key === "father name")     { if (!parsed.father) parsed.father = val; }
-      else if (key === "region")          { if (!parsed.region) parsed.region = val; }
-      else if (key === "facebookid")      { if (!parsed.facebook) parsed.facebook = val; }
-      else if (key === "name")            { if (!parsed.name) parsed.name = val; }
-      else if (key === "surname")         { if (!parsed.surname) parsed.surname = val; }
-      else if (key === "gender")          { if (!parsed.gender) parsed.gender = val; }
-      else if (key === "country")         { if (!parsed.country && val) parsed.country = val; }
+      // Address fields
+      const addrFields = ["Adres","Adres2","Adres3"];
+      for (const field of addrFields) {
+        const val = rec[field];
+        if (val && typeof val === "string" && val.trim() !== "") {
+          const cleaned = val.trim();
+          if (!parsed.addresses.includes(cleaned)) parsed.addresses.push(cleaned);
+        }
+      }
+
+      if (rec.FullName && rec.FullName.trim() !== "" && !parsed.full_name) {
+        parsed.full_name = rec.FullName.trim();
+      }
+      if (rec.FatherName && rec.FatherName.trim() !== "" && !parsed.father) {
+        parsed.father = rec.FatherName.trim();
+      }
+      if (rec.Region && rec.Region.trim() !== "" && !parsed.region) {
+        parsed.region = rec.Region.trim();
+      }
+    }
+
+    // If we got at least one phone or address or name, consider valid
+    if (parsed.mobiles.length === 0 && parsed.addresses.length === 0 && !parsed.full_name && !parsed.father && !parsed.region) {
+      return null;
     }
     return parsed;
-  } catch (e) { console.error("[parseDeepApi]", e.message); return null; }
+  } catch (e) {
+    console.error("[parseNewDeepApi]", e.message);
+    return null;
+  }
 }
 
 function formatDeepResult(parsed, queryNumber) {
@@ -431,15 +426,10 @@ function formatDeepResult(parsed, queryNumber) {
     `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
 
-  if (parsed.full_name || parsed.name || parsed.surname || parsed.father || parsed.gender) {
+  if (parsed.full_name || parsed.father) {
     text += `👤━━━ IDENTITY ━━━👤\n`;
     if (parsed.full_name) text += `${cbMd("🧑 Full Name  ", parsed.full_name)}\n`;
-    if (parsed.name || parsed.surname) {
-      const nm = [parsed.name, parsed.surname].filter(Boolean).join(" ");
-      text += `${cbMd("🏷️  Name      ", nm)}\n`;
-    }
-    if (parsed.father) text += `${cbMd("👨 Father    ", parsed.father)}\n`;
-    if (parsed.gender) text += `${cbMd("⚧️  Gender    ", parsed.gender)}\n`;
+    if (parsed.father)    text += `${cbMd("👨 Father     ", parsed.father)}\n`;
     text += "\n";
   }
 
@@ -462,13 +452,6 @@ function formatDeepResult(parsed, queryNumber) {
 
   if (parsed.region) {
     text += `📡━━━ NETWORK ━━━📡\n${cbMd("📶 Region", parsed.region)}\n\n`;
-  }
-
-  if (parsed.facebook || parsed.country) {
-    text += `🌐━━━ SOCIAL ━━━🌐\n`;
-    if (parsed.facebook) text += `${cbMd("📘 Facebook", parsed.facebook)}\n`;
-    if (parsed.country)  text += `${cbMd("🌍 Country ", parsed.country)}\n`;
-    text += "\n";
   }
 
   text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
@@ -687,19 +670,6 @@ async function apiFetch(url, timeout = 15000) {
   try { return JSON.parse(text); } catch { return text; }
 }
 
-async function fetchDeepApi(number) {
-  if (!apiToggle.deep.enabled) return null;
-  let raw = String(number).replace(/[+\s]/g,"");
-  if (raw.length === 10 && !raw.startsWith("91")) raw = "91" + raw;
-  console.log(`[DEEP API] Querying: ${raw}`);
-  try {
-    const data = await apiFetch(DEEP_API_URL.replace("{number}", raw), 20000);
-    console.log(`[DEEP API] Response status: ${data && data.status}`);
-    if (!data || typeof data !== "object") return null;
-    return data;
-  } catch (e) { console.error("[DEEP API]", e.message); return null; }
-}
-
 async function fetchNumApi(cleanPhone) {
   if (!apiToggle.num.enabled) return [];
   try {
@@ -708,159 +678,51 @@ async function fetchNumApi(cleanPhone) {
   } catch (e) { console.error("[NUM API]", e.message); return []; }
 }
 
-// ── TG API FETCHERS (4 TOTAL) ──────────────────
-
-// API #1: Username search
-async function fetchTgUsername(username) {
-  if (!apiToggle.tg_username.enabled) return null;
+// ── NEW DEEP API ──────────────────────────────
+async function fetchDeepApi(query) {
+  if (!apiToggle.deep.enabled) return null;
+  let raw = String(query).replace(/[+\s]/g,"");
+  if (raw.length === 10 && !raw.startsWith("91")) raw = "91" + raw;
+  console.log(`[NEW DEEP API] Querying: ${raw}`);
   try {
-    const url = TG_API_USERNAME.replace("{username}", encodeURIComponent(username));
-    console.log(`[TG USERNAME API] Querying: ${url}`);
-    const data = await apiFetch(url, 20000);
-    console.log(`[TG USERNAME API] Response: success=${data && data.status}`);
-    if (data && data.status === true && data.data && data.data.source1 && data.data.source1.records) {
-      const record = data.data.source1.records[0];
-      if (record && record.phone && record.phone !== "N/A") {
-        return {
-          tgId: record.tg_id || "N/A",
-          username: data.target_username || username,
-          phone: record.phone || null,
-          countryCode: record.country_code || "N/A",
-          country: record.country || "N/A",
-        };
-      }
-    }
-    return null;
-  } catch (e) { console.error("[TG USERNAME API]", e.message); return null; }
+    const data = await apiFetch(DEEP_API_URL.replace("{query}", raw), 20000);
+    console.log(`[NEW DEEP API] Response status: ${data && data.status}`);
+    if (!data || typeof data !== "object") return null;
+    return data;
+  } catch (e) { console.error("[NEW DEEP API]", e.message); return null; }
 }
 
-// API #2: UserID search
-async function fetchTgUserid(userid) {
-  if (!apiToggle.tg_userid.enabled) return null;
+// ── NEW TG → NUMBER API (only one) ───────────
+async function fetchTgApi(query) {
+  if (!apiToggle.tg.enabled) return null;
   try {
-    const url = TG_API_USERID.replace("{userid}", encodeURIComponent(userid));
-    console.log(`[TG USERID API] Querying: ${url}`);
+    const url = TG_API_URL.replace("{query}", encodeURIComponent(query));
+    console.log(`[TG API] Querying: ${url}`);
     const data = await apiFetch(url, 20000);
-    console.log(`[TG USERID API] Response: success=${data && data.status}`);
-    if (data && data.status === true) {
-      return {
-        tgId: data.tg_id || userid,
-        username: null,
-        phone: data.phone || null,
-        countryCode: data.country_code || "N/A",
-        country: data.country || "N/A",
-      };
-    }
-    return null;
-  } catch (e) { console.error("[TG USERID API]", e.message); return null; }
-}
-
-// API #3: Primary API (username or userid)
-async function fetchTgPrimary(term) {
-  if (!apiToggle.tg_primary.enabled) return null;
-  try {
-    const url = TG_API_PRIMARY.replace("{term}", encodeURIComponent(term));
-    console.log(`[TG PRIMARY API] Querying: ${url}`);
-    const data = await apiFetch(url, 20000);
-    console.log(`[TG PRIMARY API] Response: success=${data && data.success}`);
-    if (data && data.success === true && data.number && data.number !== "N/A") {
+    console.log(`[TG API] Response:`, data);
+    if (data && data.success === true && data.number) {
       return {
         tgId: data.tg_id || "N/A",
-        username: null,
-        phone: data.number || null,
-        countryCode: data.country_code || "N/A",
+        number: data.number,
         country: data.country || "N/A",
+        countryCode: data.country_code || "+91",
+        developer: data.developer || "N/A",
       };
     }
     return null;
-  } catch (e) { console.error("[TG PRIMARY API]", e.message); return null; }
-}
-
-// API #4: NEW FALLBACK API (username or @username)
-async function fetchTgFallback(query) {
-  if (!apiToggle.tg_fallback.enabled) return null;
-  try {
-    // Ensure query has @ prefix for username, or keep as-is for userid
-    let formattedQuery = query;
-    if (!/^\d+$/.test(query) && !query.startsWith("@")) {
-      formattedQuery = `@${query}`;
-    }
-    const url = TG_API_FALLBACK.replace("{query}", encodeURIComponent(formattedQuery));
-    console.log(`[TG FALLBACK API] Querying: ${url}`);
-    const data = await apiFetch(url, 20000);
-    console.log(`[TG FALLBACK API] Response:`, data);
-    
-    // Response format: { query, telegram_id, phone, country, developer }
-    if (data && data.phone && data.phone !== "N/A" && data.phone !== "") {
-      // Map country to country code (default +91 if India or unknown)
-      let countryCode = "+91"; // default
-      if (data.country) {
-        const countryMap = {
-          "India": "+91",
-          "US": "+1",
-          "USA": "+1",
-          "United States": "+1",
-          "UK": "+44",
-          "United Kingdom": "+44",
-          "UAE": "+971",
-          "Australia": "+61",
-          "Canada": "+1",
-          // Add more as needed
-        };
-        // Try to match country name (case-insensitive)
-        const countryLower = data.country.toLowerCase();
-        for (const [key, code] of Object.entries(countryMap)) {
-          if (countryLower.includes(key.toLowerCase())) {
-            countryCode = code;
-            break;
-          }
-        }
-      }
-      
-      return {
-        tgId: data.telegram_id || data.query || "N/A",
-        username: data.query || null,
-        phone: data.phone || null,
-        countryCode: countryCode,
-        country: data.country || "N/A",
-      };
-    }
-    return null;
-  } catch (e) { console.error("[TG FALLBACK API]", e.message); return null; }
+  } catch (e) { console.error("[TG API]", e.message); return null; }
 }
 
 // ── MASTER TG FETCHER ──────────────────────────
 async function fetchTgData(term) {
-  const isUserId = /^\d+$/.test(term);
-  let result = null;
-
   // Check custom data first
   const termKey = term.toLowerCase();
   if (customTgData.has(termKey)) {
     return { custom: true, data: customTgData.get(termKey) };
   }
 
-  // Try APIs in order based on input type
-  if (isUserId) {
-    // Try UserID API first, then Primary, then Fallback
-    result = await fetchTgUserid(term);
-    if (!result || !result.phone) {
-      result = await fetchTgPrimary(term);
-    }
-    if (!result || !result.phone) {
-      result = await fetchTgFallback(term);
-    }
-  } else {
-    // Try Username API first, then Primary, then Fallback
-    result = await fetchTgUsername(term);
-    if (!result || !result.phone) {
-      result = await fetchTgPrimary(term);
-    }
-    if (!result || !result.phone) {
-      result = await fetchTgFallback(term);
-    }
-  }
-
+  // Call the only TG API
+  const result = await fetchTgApi(term);
   return { custom: false, data: result };
 }
 
@@ -896,7 +758,7 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
 
     deleteMessage(chatId, statusMsg.message_id);
 
-    const deepParsed = parseDeepApiResponse(deepApiRaw);
+    const deepParsed = parseNewDeepApiResponse(deepApiRaw);
     const deepFmt    = formatDeepResult(deepParsed, clean);
 
     if (!records.length && !deepFmt) {
@@ -940,7 +802,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       return;
     }
 
-    if (!data || !data.phone) {
+    if (!data || !data.number) {
       await sendDataNotFound(chatId, userMsgId,
         `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Data nahi mila\n╚══════════════════════╝`
       );
@@ -949,28 +811,32 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
 
     if (userId) dbIncrSearch(userId);
 
-    const originalInput = /^\d+$/.test(term) ? term : `@${term}`;
-
-    // FIXED: Show country code instead of full country name
+    // Build TG info block
     let tgBlock =
       `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n` +
-      `${cbMd("💻 Input       ", originalInput)}\n` +
-      `${cbMd("🆔 Telegram ID ", data.tgId || "N/A")}\n` +
-      `${cbMd("📞 Phone       ", data.phone || "N/A")}\n` +
+      `${cbMd("💻 TG Username", term)}\n` +
+      `${cbMd("🆔 Telegram ID", data.tgId || "N/A")}\n` +
+      `${cbMd("📞 Phone      ", data.number || "N/A")}\n` +
+      `${cbMd("🌍 Country    ", data.country || "N/A")}\n` +
       `${cbMd("📱 Country Code", data.countryCode || "+91")}\n` +
       `└─────────────────────────┘\n`;
 
-    if (data.phone) {
-      let cleanPhone = data.phone.replace(/[+\s]/g,"");
-      if (cleanPhone.startsWith("91") && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(2);
-      const [numRes, deepApiRaw] = await Promise.all([
-        fetchNumApi(cleanPhone),
-        fetchDeepApi(data.phone),
-      ]);
-      if (numRes.length && apiToggle.num.enabled) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
-      const dp = parseDeepApiResponse(deepApiRaw);
-      const df = formatDeepResult(dp, cleanPhone);
-      if (df) tgBlock += df;
+    // Now fetch number info and deep intel using the found number
+    let cleanPhone = data.number.replace(/[+\s]/g,"");
+    if (cleanPhone.startsWith("91") && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(2);
+
+    const [numRes, deepApiRaw] = await Promise.all([
+      fetchNumApi(cleanPhone),
+      fetchDeepApi(data.number),
+    ]);
+
+    if (numRes.length && apiToggle.num.enabled) {
+      tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
+    }
+    const deepParsed = parseNewDeepApiResponse(deepApiRaw);
+    const deepFmt = formatDeepResult(deepParsed, cleanPhone);
+    if (deepFmt) {
+      tgBlock += deepFmt;
     }
 
     await sendDataFound(chatId, userMsgId, tgBlock);
@@ -1127,7 +993,7 @@ async function handleCallback(cb) {
     await sendPlain(chatId,
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
       "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
-      "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚══════════════════════════╝"
+      "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚════════════════════════╝"
     );
     return;
   }
@@ -1219,7 +1085,7 @@ async function handleUpdate(update) {
 
 async function handleAdminText(chatId, userId, text) {
   const lower = text.toLowerCase();
-  if (lower === "/admin")        { await sendPlain(chatId, "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚══════════════════════════╝"); return; }
+  if (lower === "/admin")        { await sendPlain(chatId, "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚════════════════════════╝"); return; }
   if (lower === "/apimanager")   { await sendPlain(chatId, apiManagerText(), { reply_markup: apiManagerKb() }); return; }
   if (lower.startsWith("/broadcast")) {
     const msgText = text.slice("/broadcast".length).trim();
