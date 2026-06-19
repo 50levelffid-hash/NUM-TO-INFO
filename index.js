@@ -26,7 +26,7 @@ const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}"
 const TG_API_USERNAME = "https://username-usrid-to-num.onrender.com/username/{username}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
 const TG_API_USERID   = "https://username-usrid-to-num.onrender.com/userid={userid}?key=b5e6f7ca9a0da02d5190aa3c9bef1d73";
 const TG_API_PRIMARY  = "https://tgtonumanurixx-1jjw.vercel.app?term={term}";
-const TG_API_FALLBACK = "https://tg2numlifetime.suryahacker.workers.dev/fetch?tgid={query}";
+const TG_API_FALLBACK = "https://tgtonumlifetime.suryahacker.workers.dev/?tg={query}";
 
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
