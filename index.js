@@ -1,4 +1,4 @@
-"ouse strict";
+"use strict";
 
 const express         = require("express");
 const fetch           = require("node-fetch");
@@ -1234,4 +1234,4 @@ async function start() {
   app.listen(PORT, () => console.log(`[BOT] Server listening on port ${PORT} ✅`));
 }
 
-ostart();
+start();
