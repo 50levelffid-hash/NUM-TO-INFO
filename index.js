@@ -144,11 +144,16 @@ async function dbUserCount() {
 const TG_BASE    = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const httpAgent  = new http.Agent ({ keepAlive: true, maxSockets: 200 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 200 });
-function agentFor(url) { return url.startsWith("https") ? { agent: httpsAgent } : { agent: httpAgent }; }
+function agentForTelegram(url) { return url.startsWith("https") ? { agent: httpsAgent } : { agent: httpAgent }; }
+
+// ── EXTERNAL API AGENTS (No Keep-Alive) ──────
+const httpsAgentExternal = new https.Agent({ keepAlive: false, timeout: 60000 });
+const httpAgentExternal  = new http.Agent ({ keepAlive: false, timeout: 60000 });
+function agentForExternal(url) { return url.startsWith("https") ? { agent: httpsAgentExternal } : { agent: httpAgentExternal }; }
 
 async function tgApi(method, body = {}) {
   try {
-    const res  = await fetch(`${TG_BASE}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000), ...agentFor(TG_BASE) });
+    const res  = await fetch(`${TG_BASE}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000), ...agentForTelegram(TG_BASE) });
     const json = await res.json();
     if (!json.ok) { console.error(`[TG ${method}]`, json.description); return null; }
     return json.result;
@@ -603,7 +608,7 @@ async function sendDbBackup(chatId) {
       form.append("chat_id", String(chatId));
       form.append("caption", `🗄️ RTF Bot DB — ${total} users | 🔍 ${totalSearches} searches | ${now} UTC`);
       form.append("document", buf, { filename: `rtfbot_${new Date().toISOString().slice(0,10)}.txt`, contentType: "text/plain" });
-      await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, ...agentFor(TG_BASE) });
+      await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, ...agentForTelegram(TG_BASE) });
       deleteMessage(chatId, statusMsg.message_id);
     } else {
       await tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: fullText });
@@ -615,10 +620,25 @@ async function sendDbBackup(chatId) {
 }
 
 // ── API FETCHERS ──────────────────────────────
-async function apiFetch(url, timeout = 15000) {
-  const res  = await fetch(url, { signal: AbortSignal.timeout(timeout), ...agentFor(url) });
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return text; }
+// Enhanced apiFetch with external agent and browser-like headers
+async function apiFetch(url, timeout = 25000) {
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(timeout),
+      ...agentForExternal(url),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'close'
+      }
+    });
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return text; }
+  } catch (e) {
+    console.error(`[apiFetch] Error fetching ${url}:`, e.message);
+    throw e;
+  }
 }
 
 // ── NEW DEEP API ──────────────────────────────
@@ -628,7 +648,7 @@ async function fetchDeepApi(number) {
   if (raw.length === 10) raw = "91" + raw;
   console.log(`[DEEP API] Querying: ${raw}`);
   try {
-    const data = await apiFetch(DEEP_API_URL.replace("{number}", raw), 25000);
+    const data = await apiFetch(DEEP_API_URL.replace("{number}", raw), 30000);
     console.log(`[DEEP API] Response status: ${data && data.status}`);
     if (!data || typeof data !== "object") return null;
     return data;
@@ -645,13 +665,101 @@ async function fetchNumApi(cleanPhone) {
 }
 
 // ══════════════════════════════════════════════
-//  NEW TG API — DIRECT RAW RESPONSE
+//  TG HANDLER — RAW RESPONSE (with external agent & headers)
 // ══════════════════════════════════════════════
 
-// (fetchTgApi function removed – no longer used)
+async function handleTg(chatId, term, userMsgId = null, userId = null) {
+  // Strip @ but remember original input
+  const rawInput  = term.trim();
+  term            = rawInput.replace(/^@/, "");
+  if (!term) {
+    await sendDataNotFound(chatId, userMsgId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438");
+    return;
+  }
+
+  // Custom TG data check
+  const termKey = term.toLowerCase();
+  if (customTgData.has(termKey)) {
+    if (userId) dbIncrSearch(userId);
+    await sendDataFound(chatId, userMsgId, customTgData.get(termKey));
+    return;
+  }
+
+  if (!apiToggle.tg.enabled) {
+    await sendDataNotFound(chatId, userMsgId,
+      `╔══════════════════════╗\n║  ⚠️  API OFFLINE      ║\n╠══════════════════════╣\n${apiToggle.tg.offMsg}\n╚══════════════════════╝`
+    );
+    return;
+  }
+
+  const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
+
+  try {
+    // Build URL
+    const url = TG_API_URL.replace("{query}", term);
+    console.log(`[TG API] URL: ${url}`);
+
+    // Fetch with external agent and headers
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(30000),
+      ...agentForExternal(url),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'close'
+      }
+    });
+    const rawText = await res.text();
+    console.log(`[TG API] Raw response: ${rawText.slice(0, 300)}`);
+
+    deleteMessage(chatId, statusMsg.message_id);
+
+    // Try to parse JSON
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (e) {
+      console.error("[TG API] JSON parse failed:", rawText.slice(0, 100));
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════════╗\n║  ❌ INVALID RESPONSE   ║\n╠══════════════════════╣\n⚠️  API ne invalid data diya\n╚══════════════════════╝`
+      );
+      return;
+    }
+
+    // Check success
+    if (!data || data.success === false) {
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Koi result nahi mila\n╚══════════════════════╝`
+      );
+      return;
+    }
+
+    // Success – send raw JSON as is (pretty printed)
+    if (userId) dbIncrSearch(userId);
+
+    const pretty = JSON.stringify(data, null, 2);
+    // Check length – if too long, send as document
+    if (pretty.length > 4000) {
+      const buf = Buffer.from(pretty, "utf8");
+      const form = new FormData();
+      form.append("chat_id", String(chatId));
+      form.append("caption", `🔎 TG Lookup Result for: ${term}`);
+      form.append("document", buf, { filename: `tg_result_${Date.now()}.json`, contentType: "application/json" });
+      await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, ...agentForTelegram(TG_BASE) });
+    } else {
+      // Send as code block (MarkdownV2)
+      await sendMessage(chatId, "```json\n" + pretty + "\n```", { reply_to_message_id: userMsgId });
+    }
+  } catch (e) {
+    console.error("[TG LOOKUP]", e.message);
+    deleteMessage(chatId, statusMsg.message_id);
+    await sendPlain(chatId, "❌  Kuch gadbad ho gayi (timeout / network error).");
+  }
+}
 
 // ══════════════════════════════════════════════
-//  LOOKUP HANDLERS
+//  OTHER LOOKUP HANDLERS (same as before)
 // ══════════════════════════════════════════════
 
 async function handleNumber(chatId, number, userMsgId = null, userId = null) {
@@ -699,88 +807,6 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
     console.error("[NUM LOOKUP]", e.message);
     deleteMessage(chatId, statusMsg.message_id);
     await sendPlain(chatId, "❌  API Error / Timeout.");
-  }
-}
-
-// ── UPDATED TG HANDLER ── sends raw JSON response ──
-async function handleTg(chatId, term, userMsgId = null, userId = null) {
-  // Strip @ but remember original input
-  const rawInput  = term.trim();
-  term            = rawInput.replace(/^@/, "");
-  if (!term) {
-    await sendDataNotFound(chatId, userMsgId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438");
-    return;
-  }
-
-  // Custom TG data check
-  const termKey = term.toLowerCase();
-  if (customTgData.has(termKey)) {
-    if (userId) dbIncrSearch(userId);
-    await sendDataFound(chatId, userMsgId, customTgData.get(termKey));
-    return;
-  }
-
-  if (!apiToggle.tg.enabled) {
-    await sendDataNotFound(chatId, userMsgId,
-      `╔══════════════════════╗\n║  ⚠️  API OFFLINE      ║\n╠══════════════════════╣\n${apiToggle.tg.offMsg}\n╚══════════════════════╝`
-    );
-    return;
-  }
-
-  const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
-
-  try {
-    // Build URL
-    const url = TG_API_URL.replace("{query}", term);
-    console.log(`[TG API] URL: ${url}`);
-
-    // Fetch raw response
-    const res = await fetch(url, { signal: AbortSignal.timeout(20000), ...agentFor(url) });
-    const rawText = await res.text();
-    console.log(`[TG API] Raw response: ${rawText.slice(0, 300)}`);
-
-    deleteMessage(chatId, statusMsg.message_id);
-
-    // Try to parse JSON
-    let data;
-    try {
-      data = JSON.parse(rawText);
-    } catch (e) {
-      console.error("[TG API] JSON parse failed:", rawText.slice(0, 100));
-      await sendDataNotFound(chatId, userMsgId,
-        `╔══════════════════════╗\n║  ❌ INVALID RESPONSE   ║\n╠══════════════════════╣\n⚠️  API ne invalid data diya\n╚══════════════════════╝`
-      );
-      return;
-    }
-
-    // Check success
-    if (!data || data.success === false) {
-      await sendDataNotFound(chatId, userMsgId,
-        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Koi result nahi mila\n╚══════════════════════╝`
-      );
-      return;
-    }
-
-    // Success – send raw JSON as is (pretty printed)
-    if (userId) dbIncrSearch(userId);
-
-    const pretty = JSON.stringify(data, null, 2);
-    // Check length – if too long, send as document
-    if (pretty.length > 4000) {
-      const buf = Buffer.from(pretty, "utf8");
-      const form = new FormData();
-      form.append("chat_id", String(chatId));
-      form.append("caption", `🔎 TG Lookup Result for: ${term}`);
-      form.append("document", buf, { filename: `tg_result_${Date.now()}.json`, contentType: "application/json" });
-      await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, ...agentFor(TG_BASE) });
-    } else {
-      // Send as code block (MarkdownV2)
-      await sendMessage(chatId, "```json\n" + pretty + "\n```", { reply_to_message_id: userMsgId });
-    }
-  } catch (e) {
-    console.error("[TG LOOKUP]", e.message);
-    deleteMessage(chatId, statusMsg.message_id);
-    await sendPlain(chatId, "❌  Kuch gadbad ho gayi (timeout / network error).");
   }
 }
 
