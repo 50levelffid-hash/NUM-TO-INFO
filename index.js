@@ -656,21 +656,44 @@ async function fetchNumApi(cleanPhone) {
 async function fetchTgApi(query) {
   if (!apiToggle.tg.enabled) return null;
   try {
-    const url  = TG_API_URL.replace("{query}", encodeURIComponent(query));
-    console.log(`[TG API] Querying: ${url}`);
-    const data = await apiFetch(url, 20000);
-    console.log(`[TG API] Response: success=${data && data.success} number=${data && data.number}`);
-    if (!data || !data.success) return null;
-    // number na mile ya not found
+    // Direct query — no encoding, username exactly as typed
+    const url  = TG_API_URL.replace("{query}", query);
+    console.log(`[TG API] URL: ${url}`);
+    const res  = await fetch(url, { signal: AbortSignal.timeout(20000), ...agentFor(url) });
+    const raw  = await res.text();
+    console.log(`[TG API] Raw response: ${raw.slice(0, 300)}`);
+
+    let data;
+    try { data = JSON.parse(raw); } catch (e) {
+      console.error("[TG API] JSON parse failed:", raw.slice(0,100));
+      return null;
+    }
+
+    console.log(`[TG API] Parsed: success=${data.success} number=${data.number} tg_id=${data.tg_id}`);
+
+    // success check
+    if (!data || data.success === false) {
+      console.log("[TG API] success=false — not found");
+      return null;
+    }
+
+    // number extract — API response me "number" field hai
     const phone = data.number ? String(data.number).trim() : null;
-    if (!phone || phone === "" || phone === "N/A" || phone === "null" || phone === "None") return null;
+    if (!phone || ["","N/A","null","None","undefined","0"].includes(phone)) {
+      console.log("[TG API] No valid phone number in response");
+      return null;
+    }
+
     return {
-      tgId:        String(data.tg_id       || "N/A").trim(),
+      tgId:        String(data.tg_id        || "N/A").trim(),
       phone:       phone,
-      country:     String(data.country     || "N/A").trim(),
-      countryCode: String(data.country_code|| "N/A").trim(),
+      country:     String(data.country      || "N/A").trim(),
+      countryCode: String(data.country_code || "N/A").trim(),
     };
-  } catch (e) { console.error("[TG API]", e.message); return null; }
+  } catch (e) {
+    console.error("[TG API] Error:", e.message);
+    return null;
+  }
 }
 
 // ══════════════════════════════════════════════
