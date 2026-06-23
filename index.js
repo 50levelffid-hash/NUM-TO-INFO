@@ -350,8 +350,6 @@ function formatNumResult(records, number) {
 
 // ══════════════════════════════════════════════
 //  NEW DEEP API FORMAT
-//  URL: https://l34k-osint.onrender.com/search?key=...&query={number}
-//  Response: { status, data: { source1: { records: [{Phone,Phone2,...,Adres,FullName,...}] } } }
 // ══════════════════════════════════════════════
 
 function parseNewDeepApiResponse(apiData) {
@@ -389,11 +387,9 @@ function formatNewDeepResult(records, queryNumber) {
     const dot = colors[i % colors.length];
     text += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
 
-    // Identity
     if (rec.FullName)   text += `${cbMd("🧑 Full Name  ", rec.FullName)}\n`;
     if (rec.FatherName) text += `${cbMd("👨 Father    ", rec.FatherName)}\n`;
 
-    // Phone numbers — collect all non-empty
     const phones = [rec.Phone, rec.Phone2, rec.Phone3, rec.Phone4, rec.Phone5]
       .filter(p => p && String(p).trim() !== "" && String(p).trim() !== "undefined");
     if (phones.length) {
@@ -405,7 +401,6 @@ function formatNewDeepResult(records, queryNumber) {
       });
     }
 
-    // Addresses — collect all non-empty
     const addrs = [rec.Adres, rec.Adres2, rec.Adres3]
       .filter(a => a && String(a).trim() !== "" && String(a).trim() !== "undefined");
     if (addrs.length) {
@@ -414,7 +409,6 @@ function formatNewDeepResult(records, queryNumber) {
       unique.forEach(addr => { text += `🔸  ${escMd(addr)}\n`; });
     }
 
-    // Network / Region
     if (rec.Region && String(rec.Region).trim()) {
       text += `${cbMd("📡 Network   ", rec.Region)}\n`;
     }
@@ -619,8 +613,7 @@ async function sendDbBackup(chatId) {
   }
 }
 
-// ── API FETCHERS ──────────────────────────────
-// Enhanced apiFetch with external agent and browser-like headers
+// ── ENHANCED API FETCH ──────────────────────
 async function apiFetch(url, timeout = 25000) {
   try {
     const res = await fetch(url, {
@@ -641,7 +634,15 @@ async function apiFetch(url, timeout = 25000) {
   }
 }
 
-// ── NEW DEEP API ──────────────────────────────
+// ── API WRAPPERS ─────────────────────────────
+async function fetchNumApi(cleanPhone) {
+  if (!apiToggle.num.enabled) return [];
+  try {
+    const data = await apiFetch(NUM_API_URL.replace("{number}", cleanPhone));
+    return extractRecords(data);
+  } catch (e) { console.error("[NUM API]", e.message); return []; }
+}
+
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
   let raw = String(number).replace(/[+\s]/g,"");
@@ -655,115 +656,28 @@ async function fetchDeepApi(number) {
   } catch (e) { console.error("[DEEP API]", e.message); return null; }
 }
 
-// ── NUM API ───────────────────────────────────
-async function fetchNumApi(cleanPhone) {
-  if (!apiToggle.num.enabled) return [];
+async function fetchTgApi(term) {
+  // Return parsed result or null
   try {
-    const data = await apiFetch(NUM_API_URL.replace("{number}", cleanPhone));
-    return extractRecords(data);
-  } catch (e) { console.error("[NUM API]", e.message); return []; }
-}
-
-// ══════════════════════════════════════════════
-//  TG HANDLER — RAW RESPONSE (with external agent & headers)
-// ══════════════════════════════════════════════
-
-async function handleTg(chatId, term, userMsgId = null, userId = null) {
-  // Strip @ but remember original input
-  const rawInput  = term.trim();
-  term            = rawInput.replace(/^@/, "");
-  if (!term) {
-    await sendDataNotFound(chatId, userMsgId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438");
-    return;
-  }
-
-  // Custom TG data check
-  const termKey = term.toLowerCase();
-  if (customTgData.has(termKey)) {
-    if (userId) dbIncrSearch(userId);
-    await sendDataFound(chatId, userMsgId, customTgData.get(termKey));
-    return;
-  }
-
-  if (!apiToggle.tg.enabled) {
-    await sendDataNotFound(chatId, userMsgId,
-      `╔══════════════════════╗\n║  ⚠️  API OFFLINE      ║\n╠══════════════════════╣\n${apiToggle.tg.offMsg}\n╚══════════════════════╝`
-    );
-    return;
-  }
-
-  const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
-
-  try {
-    // Build URL
     const url = TG_API_URL.replace("{query}", term);
-    console.log(`[TG API] URL: ${url}`);
-
-    // Fetch with external agent and headers
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(30000),
-      ...agentForExternal(url),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'close'
-      }
-    });
-    const rawText = await res.text();
-    console.log(`[TG API] Raw response: ${rawText.slice(0, 300)}`);
-
-    deleteMessage(chatId, statusMsg.message_id);
-
-    // Try to parse JSON
-    let data;
-    try {
-      data = JSON.parse(rawText);
-    } catch (e) {
-      console.error("[TG API] JSON parse failed:", rawText.slice(0, 100));
-      await sendDataNotFound(chatId, userMsgId,
-        `╔══════════════════════╗\n║  ❌ INVALID RESPONSE   ║\n╠══════════════════════╣\n⚠️  API ne invalid data diya\n╚══════════════════════╝`
-      );
-      return;
-    }
-
-    // Check success
-    if (!data || data.success === false) {
-      await sendDataNotFound(chatId, userMsgId,
-        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Koi result nahi mila\n╚══════════════════════╝`
-      );
-      return;
-    }
-
-    // Success – send raw JSON as is (pretty printed)
-    if (userId) dbIncrSearch(userId);
-
-    const pretty = JSON.stringify(data, null, 2);
-    // Check length – if too long, send as document
-    if (pretty.length > 4000) {
-      const buf = Buffer.from(pretty, "utf8");
-      const form = new FormData();
-      form.append("chat_id", String(chatId));
-      form.append("caption", `🔎 TG Lookup Result for: ${term}`);
-      form.append("document", buf, { filename: `tg_result_${Date.now()}.json`, contentType: "application/json" });
-      await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, ...agentForTelegram(TG_BASE) });
-    } else {
-      // Send as code block (MarkdownV2)
-      await sendMessage(chatId, "```json\n" + pretty + "\n```", { reply_to_message_id: userMsgId });
-    }
-  } catch (e) {
-    console.error("[TG LOOKUP]", e.message);
-    deleteMessage(chatId, statusMsg.message_id);
-    await sendPlain(chatId, "❌  Kuch gadbad ho gayi (timeout / network error).");
-  }
+    const data = await apiFetch(url, 30000);
+    if (!data || data.success === false) return null;
+    const phone = data.number ? String(data.number).trim() : null;
+    if (!phone || ["","N/A","null","None","undefined","0"].includes(phone)) return null;
+    return {
+      tgId:        String(data.tg_id        || "N/A").trim(),
+      phone:       phone,
+      country:     String(data.country      || "N/A").trim(),
+      countryCode: String(data.country_code || "N/A").trim(),
+    };
+  } catch (e) { console.error("[TG API]", e.message); return null; }
 }
 
 // ══════════════════════════════════════════════
-//  OTHER LOOKUP HANDLERS (same as before)
+//  LOOKUP HANDLERS (all use enhanced apiFetch)
 // ══════════════════════════════════════════════
 
 async function handleNumber(chatId, number, userMsgId = null, userId = null) {
-  // Custom number data check
   const numKey = number.trim().replace(/[+\s]/g,"").replace(/^91/,"");
   if (customNumData.has(numKey)) {
     if (userId) dbIncrSearch(userId);
@@ -807,6 +721,80 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
     console.error("[NUM LOOKUP]", e.message);
     deleteMessage(chatId, statusMsg.message_id);
     await sendPlain(chatId, "❌  API Error / Timeout.");
+  }
+}
+
+async function handleTg(chatId, term, userMsgId = null, userId = null) {
+  const rawInput = term.trim();
+  term = rawInput.replace(/^@/, "");
+  if (!term) {
+    await sendDataNotFound(chatId, userMsgId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438");
+    return;
+  }
+
+  const termKey = term.toLowerCase();
+  if (customTgData.has(termKey)) {
+    if (userId) dbIncrSearch(userId);
+    await sendDataFound(chatId, userMsgId, customTgData.get(termKey));
+    return;
+  }
+
+  if (!apiToggle.tg.enabled) {
+    await sendDataNotFound(chatId, userMsgId,
+      `╔══════════════════════╗\n║  ⚠️  API OFFLINE      ║\n╠══════════════════════╣\n${apiToggle.tg.offMsg}\n╚══════════════════════╝`
+    );
+    return;
+  }
+
+  const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
+
+  try {
+    const result = await fetchTgApi(term);
+    deleteMessage(chatId, statusMsg.message_id);
+
+    if (!result) {
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
+      );
+      return;
+    }
+
+    if (userId) dbIncrSearch(userId);
+
+    // Build TG block
+    const isUserId = /^\d{5,}$/.test(term);
+    let tgBlock =
+      `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n`;
+    if (!isUserId) {
+      const displayUsername = rawInput.startsWith("@") ? rawInput : `@${term}`;
+      tgBlock += `${cbMd("💻 Username    ", displayUsername)}\n`;
+    }
+    tgBlock +=
+      `${cbMd("🆔 Telegram ID ", result.tgId)}\n` +
+      `${cbMd("📞 Number      ", result.phone)}\n` +
+      `${cbMd("🌍 Country     ", result.country)}\n` +
+      `${cbMd("📱 Country Code", result.countryCode)}\n` +
+      `└─────────────────────────┘\n`;
+
+    // Auto fetch number info (using enhanced apiFetch)
+    if (result.phone) {
+      let cleanPhone = result.phone.replace(/[+\s]/g, "");
+      if (cleanPhone.startsWith("91") && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(2);
+      const [numRes, deepApiRaw] = await Promise.all([
+        fetchNumApi(cleanPhone),
+        fetchDeepApi(result.phone),
+      ]);
+      if (numRes.length && apiToggle.num.enabled) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
+      const deepRecords = parseNewDeepApiResponse(deepApiRaw);
+      const df = formatNewDeepResult(deepRecords, cleanPhone);
+      if (df) tgBlock += df;
+    }
+
+    await sendDataFound(chatId, userMsgId, tgBlock);
+  } catch (e) {
+    console.error("[TG LOOKUP]", e.message);
+    deleteMessage(chatId, statusMsg.message_id);
+    await sendPlain(chatId, "❌  Kuch gadbad ho gayi.");
   }
 }
 
@@ -957,7 +945,6 @@ async function handleUpdate(update) {
 
     if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
-    // API off-message setter
     if (typeof choice === "string" && choice.startsWith("api_offmsg::") && _isAdmin) {
       const key = choice.split("::")[1];
       userState.delete(from.id);
