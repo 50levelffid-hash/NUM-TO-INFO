@@ -26,7 +26,7 @@ const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
 
 const CHANNELS = [
-  { name: "🔥 RTF GAMING",  username: "@RTFGAMING1"     },
+  { name: "🔥 RTF GAMING",  username: "RTFGAMING1"     },
   { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0" },
   { name: "💀 RTF ERA",     username: "BYEPAASLINK"    },
 ];
