@@ -29,7 +29,6 @@ const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rt
 let CHANNELS = [
   { name: "🔥 RTF GAMING",  username: "RTFGAMING1",     id: null },
   { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0", id: null },
-  { name: "💀 RTF ERA",     username: "null",    id: -1003559518526 },
 ];
 
 const JOINED_STATUSES = new Set(["member","administrator","creator","restricted"]);
