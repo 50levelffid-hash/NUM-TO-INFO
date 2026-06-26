@@ -25,10 +25,11 @@ const TG_API_URL      = "https://rootx-osint.in/?type=tg_num&key=userxinfo&query
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
 
-const CHANNELS = [
-  { name: "🔥 RTF GAMING",  username: "RTFGAMING1"     },
-  { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0" },
-  { name: "💀 RTF ERA",     username: "BYEPAASLINK"    },
+// ── CHANNELS (dynamic, DB se load hoga) ───────
+let CHANNELS = [
+  { name: "🔥 RTF GAMING",  username: "RTFGAMING1",     id: null },
+  { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0", id: null },
+  { name: "💀 RTF ERA",     username: "BYEPAASLINK",    id: null },
 ];
 
 const JOINED_STATUSES = new Set(["member","administrator","creator","restricted"]);
@@ -42,36 +43,12 @@ const customNumData = new Map();
 //  API TOGGLE SYSTEM
 // ══════════════════════════════════════════════
 const apiToggle = {
-  num: {
-    enabled: true,
-    label:   "📞 Number API",
-    offMsg:  "❌ Number lookup abhi available nahi hai.",
-  },
-  deep: {
-    enabled: true,
-    label:   "🔬 Deep Intel API",
-    offMsg:  "❌ Deep data lookup abhi available nahi hai.",
-  },
-  tg: {
-    enabled: true,
-    label:   "🔎 TG Lookup API",
-    offMsg:  "❌ TG lookup abhi available nahi hai. Thodi der baad try karo.",
-  },
-  adhar: {
-    enabled: true,
-    label:   "🪪 Aadhaar API",
-    offMsg:  "❌ Aadhaar lookup abhi available nahi hai.",
-  },
-  upi: {
-    enabled: true,
-    label:   "💳 UPI API",
-    offMsg:  "❌ UPI lookup abhi available nahi hai.",
-  },
-  vehicle: {
-    enabled: true,
-    label:   "🚗 Vehicle API",
-    offMsg:  "❌ Vehicle lookup abhi available nahi hai.",
-  },
+  num:     { enabled: true, label: "📞 Number API",    offMsg: "❌ Number lookup abhi available nahi hai." },
+  deep:    { enabled: true, label: "🔬 Deep Intel API", offMsg: "❌ Deep data lookup abhi available nahi hai." },
+  tg:      { enabled: true, label: "🔎 TG Lookup API",  offMsg: "❌ TG lookup abhi available nahi hai. Thodi der baad try karo." },
+  adhar:   { enabled: true, label: "🪪 Aadhaar API",    offMsg: "❌ Aadhaar lookup abhi available nahi hai." },
+  upi:     { enabled: true, label: "💳 UPI API",        offMsg: "❌ UPI lookup abhi available nahi hai." },
+  vehicle: { enabled: true, label: "🚗 Vehicle API",    offMsg: "❌ Vehicle lookup abhi available nahi hai." },
 };
 
 // ── CONCURRENCY CONTROL ───────────────────────
@@ -102,6 +79,29 @@ async function initDb() {
     await dataCol.createIndex({ key: 1 });
     console.log("[DB] MongoDB connected ✅");
   } catch (e) { console.error("[DB ERROR]", e.message); mongoClient = null; }
+}
+
+// ── CHANNEL DB FUNCTIONS ──────────────────────
+async function dbSaveChannels() {
+  if (!dataCol) return;
+  try {
+    await dataCol.updateOne(
+      { key: "channels" },
+      { $set: { key: "channels", value: CHANNELS, updated_at: new Date().toISOString() } },
+      { upsert: true }
+    );
+  } catch (e) { console.error("[DB SAVE CHANNELS]", e.message); }
+}
+
+async function dbLoadChannels() {
+  if (!dataCol) return;
+  try {
+    const doc = await dataCol.findOne({ key: "channels" });
+    if (doc && Array.isArray(doc.value) && doc.value.length > 0) {
+      CHANNELS = doc.value;
+      console.log(`[DB] Loaded ${CHANNELS.length} channels ✅`);
+    }
+  } catch (e) { console.error("[DB LOAD CHANNELS]", e.message); }
 }
 
 function dbSaveUser(from) {
@@ -146,7 +146,6 @@ const httpAgent  = new http.Agent ({ keepAlive: true, maxSockets: 200 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 200 });
 function agentForTelegram(url) { return url.startsWith("https") ? { agent: httpsAgent } : { agent: httpAgent }; }
 
-// ── EXTERNAL API AGENTS (No Keep-Alive) ──────
 const httpsAgentExternal = new https.Agent({ keepAlive: false, timeout: 60000 });
 const httpAgentExternal  = new http.Agent ({ keepAlive: false, timeout: 60000 });
 function agentForExternal(url) { return url.startsWith("https") ? { agent: httpsAgentExternal } : { agent: httpAgentExternal }; }
@@ -203,11 +202,20 @@ async function sendDataFound(chatId, userMsgId, text) {
 const joinCache = new Map();
 const JOIN_CACHE_TTL = 60_000;
 
+// Channel ka chat_id resolve karta hai (username ya numeric ID)
+function resolveChannelId(ch) {
+  if (ch.id) return ch.id; // numeric ID (private channel)
+  if (ch.username) return `@${ch.username}`; // public username
+  return null;
+}
+
 async function getNotJoinedChannels(userId) {
   const missing = [];
   for (const ch of CHANNELS) {
+    const cid = resolveChannelId(ch);
+    if (!cid) continue;
     try {
-      const m = await getChatMember(`@${ch.username}`, userId);
+      const m = await getChatMember(cid, userId);
       if (!m || !JOINED_STATUSES.has(m.status)) missing.push(ch);
     } catch { missing.push(ch); }
   }
@@ -231,7 +239,16 @@ function isAdmin(username) {
 async function sendJoinPrompt(chatId) {
   const missing = await getNotJoinedChannels(chatId);
   if (!missing.length) return false;
-  const buttons = missing.map(ch => [{ text: `➕ ${ch.name}`, url: `https://t.me/${ch.username}` }]);
+  const buttons = missing.map(ch => {
+    // Public channel = direct link, private = invite link agar hai
+    const url = ch.invite_link
+      ? ch.invite_link
+      : ch.username
+        ? `https://t.me/${ch.username}`
+        : null;
+    if (!url) return null;
+    return [{ text: `➕ ${ch.name}`, url }];
+  }).filter(Boolean);
   buttons.push([{ text: "✅ VERIFY JOIN", callback_data: "verify" }]);
   await sendPlain(chatId, "╔════════════════════════╗\n║  🔒  ACCESS LOCKED  🔒  ║\n╠════════════════════════╣\n📢  Sabhi channels JOIN karo\n⚡  Phir ✅ VERIFY dabao\n╚════════════════════════╝", { reply_markup: { inline_keyboard: buttons } });
   return true;
@@ -240,7 +257,7 @@ async function sendJoinPrompt(chatId) {
 // ── MENUS ─────────────────────────────────────
 const MAIN_MENU_TEXT =
   "╔══════════════════════════╗\n║  ⚡️  R T F   B O T  ⚡️   ║\n╠══════════════════════════╣\n" +
-  "🛡  Status  : ONLINE\n👑  Owner   : @RTFGAMMING\n🔥  Version : v3.0\n" +
+  "🛡  Status  : ONLINE\n👑  Owner   : @RTFGAMMING\n🔥  Version : v3.1\n" +
   "╠══════════════════════════╣\n📌  Neeche se option chuno:\n╚══════════════════════════╝";
 
 const HELP_TEXT =
@@ -275,7 +292,40 @@ function adminMenuKb() {
     [{ text: "✏️ Set Custom Num", callback_data: "menu_setcustomnum" }],
     [{ text: "🗄️ DB Backup", callback_data: "menu_dbbackup" }],
     [{ text: "🔌 API Manager", callback_data: "menu_api" }],
+    [{ text: "📢 Channel Manager", callback_data: "menu_channels" }],
   ]};
+}
+
+// ══════════════════════════════════════════════
+//  CHANNEL MANAGER
+// ══════════════════════════════════════════════
+
+function channelManagerText() {
+  let text = "╔══════════════════════════╗\n║  📢  CHANNEL MANAGER     ║\n╠══════════════════════════╣\n\n";
+  if (!CHANNELS.length) {
+    text += "❌  Koi channel nahi hai abhi.\n\n";
+  } else {
+    CHANNELS.forEach((ch, i) => {
+      const type = ch.username ? "🌐 Public" : "🔒 Private";
+      const ref  = ch.username ? `@${ch.username}` : `ID: ${ch.id}`;
+      text += `${i + 1}\\. ${escMd(ch.name)}\n`;
+      text += `   ${type} \\| ${escMd(ref)}\n`;
+      if (ch.invite_link) text += `   🔗 Invite link set ✅\n`;
+      text += "\n";
+    });
+  }
+  text += "🗑️ = Remove  \\|  ➕ = Naya Add\n╚══════════════════════════╝";
+  return text;
+}
+
+function channelManagerKb() {
+  const rows = CHANNELS.map((ch, i) => {
+    const label = ch.username ? `@${ch.username}` : `ID:${ch.id}`;
+    return [{ text: `🗑️ Remove — ${ch.name} (${label})`, callback_data: `ch_del_${i}` }];
+  });
+  rows.push([{ text: "➕ Channel Add Karo", callback_data: "ch_add" }]);
+  rows.push([{ text: "🔙 Back", callback_data: "menu_adminpanel" }]);
+  return { inline_keyboard: rows };
 }
 
 // ── API MANAGER ───────────────────────────────
@@ -348,16 +398,11 @@ function formatNumResult(records, number) {
   return out;
 }
 
-// ══════════════════════════════════════════════
-//  NEW DEEP API FORMAT
-// ══════════════════════════════════════════════
-
 function parseNewDeepApiResponse(apiData) {
   try {
     if (!apiData || !apiData.status) return null;
     const dataObj = apiData.data;
     if (!dataObj || typeof dataObj !== "object") return null;
-
     const allRecords = [];
     for (const srcKey of Object.keys(dataObj)) {
       const src = dataObj[srcKey];
@@ -374,33 +419,25 @@ function parseNewDeepApiResponse(apiData) {
 
 function formatNewDeepResult(records, queryNumber) {
   if (!records || !records.length) return null;
-
   let text =
     `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `│  🕵️  D E E P   I N T E L   │\n` +
     `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
-
   const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
-
   records.forEach((rec, i) => {
     const dot = colors[i % colors.length];
     text += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
-
     if (rec.FullName)   text += `${cbMd("🧑 Full Name  ", rec.FullName)}\n`;
     if (rec.FatherName) text += `${cbMd("👨 Father    ", rec.FatherName)}\n`;
-
     const phones = [rec.Phone, rec.Phone2, rec.Phone3, rec.Phone4, rec.Phone5]
       .filter(p => p && String(p).trim() !== "" && String(p).trim() !== "undefined");
     if (phones.length) {
       const unique = [...new Set(phones.map(p => String(p).trim()))];
       text += `📞━━ PHONES \\(${unique.length}\\) ━━📞\n`;
       const clrs = ["🔴","🟠","🟡","🟢","🔵","🟣","🔘"];
-      unique.forEach((mob, mi) => {
-        text += `${clrs[mi % clrs.length]}  \`${escMd(mob)}\`\n`;
-      });
+      unique.forEach((mob, mi) => { text += `${clrs[mi % clrs.length]}  \`${escMd(mob)}\`\n`; });
     }
-
     const addrs = [rec.Adres, rec.Adres2, rec.Adres3]
       .filter(a => a && String(a).trim() !== "" && String(a).trim() !== "undefined");
     if (addrs.length) {
@@ -408,19 +445,13 @@ function formatNewDeepResult(records, queryNumber) {
       text += `📍━━ ADDRESSES \\(${unique.length}\\) ━━📍\n`;
       unique.forEach(addr => { text += `🔸  ${escMd(addr)}\n`; });
     }
-
-    if (rec.Region && String(rec.Region).trim()) {
-      text += `${cbMd("📡 Network   ", rec.Region)}\n`;
-    }
-
+    if (rec.Region && String(rec.Region).trim()) text += `${cbMd("📡 Network   ", rec.Region)}\n`;
     text += "\n";
   });
-
   text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
   return text;
 }
 
-// ── AADHAAR FORMAT ────────────────────────────
 function formatAdharResult(data, adharNumber) {
   try {
     if (!data || !data.success) return null;
@@ -428,23 +459,20 @@ function formatAdharResult(data, adharNumber) {
     const card    = details.card_info        || {};
     const members = details.members          || [];
     const monthly = details.monthly_summary  || [];
-
     let out =
       `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
       `🔢  Aadhaar     : \`${escMd(adharNumber)}\`\n${cbMd("🪪  RC ID       ", data.ration_card_id)}\n\n`;
-
     if (Object.keys(card).length) {
       out += `📋━━━ RATION CARD ━━━📋\n`;
-      if (card["Card Type"])       out += `${cbMd("📌 Card Type   ", card["Card Type"])}\n`;
-      if (card["Scheme"])          out += `${cbMd("📋 Scheme      ", card["Scheme"])}\n`;
-      if (card["State"])           out += `${cbMd("🗺️  State       ", card["State"])}\n`;
-      if (card["District"])        out += `${cbMd("📍 District    ", card["District"])}\n`;
-      if (card["Issue Date"])      out += `${cbMd("📅 Issue Date  ", card["Issue Date"])}\n`;
-      if (card["Home FPS"])        out += `${cbMd("🏪 Home FPS    ", card["Home FPS"])}\n`;
+      if (card["Card Type"])  out += `${cbMd("📌 Card Type   ", card["Card Type"])}\n`;
+      if (card["Scheme"])     out += `${cbMd("📋 Scheme      ", card["Scheme"])}\n`;
+      if (card["State"])      out += `${cbMd("🗺️  State       ", card["State"])}\n`;
+      if (card["District"])   out += `${cbMd("📍 District    ", card["District"])}\n`;
+      if (card["Issue Date"]) out += `${cbMd("📅 Issue Date  ", card["Issue Date"])}\n`;
+      if (card["Home FPS"])   out += `${cbMd("🏪 Home FPS    ", card["Home FPS"])}\n`;
       if (card["Address"] && card["Address"] !== "null") out += `${cbMd("🏠 Address     ", card["Address"])}\n`;
       out += "\n";
     }
-
     if (members.length) {
       out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
       const genderIcon = g => (g||"").toLowerCase() === "f" ? "👩" : (g||"").toLowerCase() === "m" ? "👨" : "🧑";
@@ -459,13 +487,11 @@ function formatAdharResult(data, adharNumber) {
           `   📅 Updated   : ${escMd(m.cr_last_updated || "N/A")}\n\n`;
       });
     }
-
     if (monthly.length) {
       out += `📊━━━ RECENT MONTHS ━━━📊\n`;
       monthly.slice(0,3).forEach(m => { out += `📅 ${escMd(m.month)}  \\|  👥 Members: ${escMd(m.member_count)}\n`; });
       out += "\n";
     }
-
     out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
     return out;
   } catch (e) { console.error("[formatAdhar]", e.message); return null; }
@@ -657,7 +683,6 @@ async function fetchDeepApi(number) {
 }
 
 async function fetchTgApi(term) {
-  // Return parsed result or null
   try {
     const url = TG_API_URL.replace("{query}", term);
     const data = await apiFetch(url, 30000);
@@ -674,7 +699,7 @@ async function fetchTgApi(term) {
 }
 
 // ══════════════════════════════════════════════
-//  LOOKUP HANDLERS (all use enhanced apiFetch)
+//  LOOKUP HANDLERS
 // ══════════════════════════════════════════════
 
 async function handleNumber(chatId, number, userMsgId = null, userId = null) {
@@ -684,38 +709,29 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
     await sendDataFound(chatId, userMsgId, customNumData.get(numKey));
     return;
   }
-
   if (!apiToggle.num.enabled && !apiToggle.deep.enabled) {
     await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.num.offMsg}`);
     return;
   }
-
   const statusMsg = await sendPlain(chatId, `🔍  Searching: ${number} ...`);
   try {
     let clean = number.trim().replace(/\s/g,"").replace("+91","");
     if (clean.startsWith("91") && clean.length > 10) clean = clean.slice(2);
-
     const [records, deepApiRaw] = await Promise.all([
       fetchNumApi(clean),
       fetchDeepApi(number),
     ]);
-
     deleteMessage(chatId, statusMsg.message_id);
-
     const deepRecords = parseNewDeepApiResponse(deepApiRaw);
     const deepFmt     = formatNewDeepResult(deepRecords, clean);
-
     if (!records.length && !deepFmt) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: ${clean}\n⚠️  Koi record nahi mila`);
       return;
     }
-
     if (userId) dbIncrSearch(userId);
-
     let full = "";
     if (records.length && apiToggle.num.enabled) full += formatNumResult(records, clean);
     if (deepFmt) full += deepFmt;
-
     await sendDataFound(chatId, userMsgId, full);
   } catch (e) {
     console.error("[NUM LOOKUP]", e.message);
@@ -731,37 +747,29 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
     await sendDataNotFound(chatId, userMsgId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438");
     return;
   }
-
   const termKey = term.toLowerCase();
   if (customTgData.has(termKey)) {
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, customTgData.get(termKey));
     return;
   }
-
   if (!apiToggle.tg.enabled) {
     await sendDataNotFound(chatId, userMsgId,
       `╔══════════════════════╗\n║  ⚠️  API OFFLINE      ║\n╠══════════════════════╣\n${apiToggle.tg.offMsg}\n╚══════════════════════╝`
     );
     return;
   }
-
   const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
-
   try {
     const result = await fetchTgApi(term);
     deleteMessage(chatId, statusMsg.message_id);
-
     if (!result) {
       await sendDataNotFound(chatId, userMsgId,
         `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
       );
       return;
     }
-
     if (userId) dbIncrSearch(userId);
-
-    // Build TG block
     const isUserId = /^\d{5,}$/.test(term);
     let tgBlock =
       `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n`;
@@ -775,8 +783,6 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       `${cbMd("🌍 Country     ", result.country)}\n` +
       `${cbMd("📱 Country Code", result.countryCode)}\n` +
       `└─────────────────────────┘\n`;
-
-    // Auto fetch number info (using enhanced apiFetch)
     if (result.phone) {
       let cleanPhone = result.phone.replace(/[+\s]/g, "");
       if (cleanPhone.startsWith("91") && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(2);
@@ -789,7 +795,6 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       const df = formatNewDeepResult(deepRecords, cleanPhone);
       if (df) tgBlock += df;
     }
-
     await sendDataFound(chatId, userMsgId, tgBlock);
   } catch (e) {
     console.error("[TG LOOKUP]", e.message);
@@ -837,6 +842,121 @@ async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null)
   } catch (e) { console.error("[VEHICLE]", e.message); deleteMessage(chatId, statusMsg.message_id); await sendPlain(chatId, "❌  API Error / Timeout."); }
 }
 
+// ══════════════════════════════════════════════
+//  CHANNEL ADD FLOW HANDLER
+// ══════════════════════════════════════════════
+
+// Channel add karne ka state flow:
+// ch_add_step1 → user channel username/ID bhejta hai
+// ch_add_step2::<ref> → user channel name bhejta hai
+// ch_add_step3::<ref>::<name> → private channel ke liye invite link (optional)
+
+async function handleChannelAddFlow(chatId, from, text, choice) {
+
+  // STEP 1: Username ya ID receive kiya
+  if (choice === "ch_add_step1") {
+    const raw = text.trim();
+    let ref = raw.replace(/^@/, ""); // username bina @
+    let isPrivate = false;
+
+    // Check karo private ID hai ya username
+    if (raw.startsWith("-100") || /^-\d+$/.test(raw)) {
+      isPrivate = true;
+      ref = raw; // numeric ID as-is
+    }
+
+    // Validate karo — bot se getChatMember try karo
+    const statusMsg = await sendPlain(chatId, `🔍 Channel verify ho raha hai: ${raw} ...`);
+    const testResult = await tgApi("getChat", { chat_id: isPrivate ? parseInt(ref) : `@${ref}` });
+    deleteMessage(chatId, statusMsg.message_id);
+
+    if (!testResult) {
+      await sendPlain(chatId,
+        "╔══════════════════════════╗\n║  ❌  CHANNEL NOT FOUND   ║\n╠══════════════════════════╣\n" +
+        "❌  Bot is channel ka member nahi hai\n   ya channel exist nahi karta.\n\n" +
+        "✅  Bot ko channel admin banao pehle!\n╚══════════════════════════╝"
+      );
+      userState.delete(from.id);
+      return;
+    }
+
+    // Channel title already available
+    const autoName = testResult.title || "";
+    userState.set(from.id, `ch_add_step2::${isPrivate ? "id:" + ref : "user:" + ref}::${autoName}`);
+
+    await sendPlain(chatId,
+      `╔══════════════════════════╗\n║  ✅  CHANNEL FOUND        ║\n╠══════════════════════════╣\n` +
+      `📢  Title   : ${testResult.title || "N/A"}\n` +
+      `🔗  Type    : ${isPrivate ? "🔒 Private" : "🌐 Public"}\n` +
+      `╠══════════════════════════╣\n` +
+      `📥  Channel ka display name bhejo\n   (jo join prompt mein dikhega)\n` +
+      `   Ya "skip" karo auto title use karne ke liye:\n╚══════════════════════════╝`
+    );
+    return;
+  }
+
+  // STEP 2: Name receive kiya
+  if (typeof choice === "string" && choice.startsWith("ch_add_step2::")) {
+    const parts   = choice.split("::");
+    const refPart = parts[1]; // "id:-100xxx" ya "user:username"
+    const autoName = parts.slice(2).join("::") || "";
+
+    const displayName = text.trim().toLowerCase() === "skip"
+      ? (autoName || "📢 Channel")
+      : text.trim();
+
+    const isPrivate  = refPart.startsWith("id:");
+    const refValue   = refPart.replace(/^(id:|user:)/, "");
+
+    // Private channel ke liye invite link optional
+    if (isPrivate) {
+      userState.set(from.id, `ch_add_step3::${refPart}::${displayName}`);
+      await sendPlain(chatId,
+        "╔══════════════════════════╗\n║  🔒  PRIVATE CHANNEL      ║\n╠══════════════════════════╣\n" +
+        "📥  Invite link bhejo (optional):\n   Example: https://t.me/+xxxxxx\n\n" +
+        '   Ya "skip" karo bina invite link ke:\n╚══════════════════════════╝'
+      );
+      return;
+    }
+
+    // Public channel — seedha add karo
+    CHANNELS.push({ name: displayName, username: refValue, id: null, invite_link: null });
+    await dbSaveChannels();
+    userState.delete(from.id);
+    await sendPlain(chatId,
+      `╔══════════════════════════╗\n║  ✅  CHANNEL ADDED        ║\n╠══════════════════════════╣\n` +
+      `📢  Name     : ${displayName}\n🌐  Username : @${refValue}\n` +
+      `📊  Total    : ${CHANNELS.length} channels\n╚══════════════════════════╝`
+    );
+    return;
+  }
+
+  // STEP 3: Private channel invite link
+  if (typeof choice === "string" && choice.startsWith("ch_add_step3::")) {
+    const parts      = choice.split("::");
+    const refPart    = parts[1];
+    const displayName = parts.slice(2).join("::");
+    const refValue   = refPart.replace(/^id:/, "");
+    const inviteLink = text.trim().toLowerCase() === "skip" ? null : text.trim();
+
+    CHANNELS.push({
+      name:        displayName,
+      username:    null,
+      id:          parseInt(refValue) || refValue,
+      invite_link: inviteLink,
+    });
+    await dbSaveChannels();
+    userState.delete(from.id);
+    await sendPlain(chatId,
+      `╔══════════════════════════╗\n║  ✅  CHANNEL ADDED        ║\n╠══════════════════════════╣\n` +
+      `📢  Name     : ${displayName}\n🔒  ID       : ${refValue}\n` +
+      `🔗  Invite   : ${inviteLink || "❌ None"}\n` +
+      `📊  Total    : ${CHANNELS.length} channels\n╚══════════════════════════╝`
+    );
+    return;
+  }
+}
+
 // ── CALLBACKS ─────────────────────────────────
 async function handleCallback(cb) {
   const from     = cb.from;
@@ -850,7 +970,11 @@ async function handleCallback(cb) {
     const missing = await getNotJoinedChannels(from.id);
     if (missing.length) {
       await answerCallback(cb.id, `❌ Abhi bhi join karo: ${missing.map(c=>c.name).join(", ")}`, true);
-      const btns = missing.map(c => [{ text: `➕ ${c.name}`, url: `https://t.me/${c.username}` }]);
+      const btns = missing.map(c => {
+        const url = c.invite_link ? c.invite_link : c.username ? `https://t.me/${c.username}` : null;
+        if (!url) return null;
+        return [{ text: `➕ ${c.name}`, url }];
+      }).filter(Boolean);
       btns.push([{ text: "✅ VERIFY JOIN", callback_data: "verify" }]);
       await tgApi("editMessageReplyMarkup", { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: btns } });
     } else {
@@ -879,6 +1003,55 @@ async function handleCallback(cb) {
       userState.set(from.id, `api_offmsg::${key}`);
       await answerCallback(cb.id);
       await sendPlain(chatId, `✏️  ${apiToggle[key].label} ka off message set karo:\n\nCurrent: "${apiToggle[key].offMsg}"\n\nNaya message type karo (ya "cancel" bhejo):`);
+    }
+    return;
+  }
+
+  // ── CHANNEL MANAGER CALLBACKS ──
+  if (data === "menu_channels" && _isAdmin) {
+    await answerCallback(cb.id);
+    await tgApi("editMessageText", {
+      chat_id: chatId, message_id: msgId,
+      text: channelManagerText(),
+      parse_mode: "MarkdownV2",
+      reply_markup: channelManagerKb()
+    });
+    return;
+  }
+
+  if (data === "ch_add" && _isAdmin) {
+    await answerCallback(cb.id);
+    userState.set(from.id, "ch_add_step1");
+    await sendPlain(chatId,
+      "╔══════════════════════════╗\n║  ➕  CHANNEL ADD          ║\n╠══════════════════════════╣\n" +
+      "📥  Channel username ya ID bhejo:\n\n" +
+      "🌐 Public  : RTFGAMING1 ya @RTFGAMING1\n" +
+      "🔒 Private : -1001234567890\n\n" +
+      "⚠️  Bot ko pehle channel admin\n   banana zaroori hai!\n╚══════════════════════════╝"
+    );
+    return;
+  }
+
+  if (data.startsWith("ch_del_") && _isAdmin) {
+    const idx = parseInt(data.replace("ch_del_", ""));
+    await answerCallback(cb.id);
+    if (!isNaN(idx) && CHANNELS[idx]) {
+      const removed = CHANNELS.splice(idx, 1)[0];
+      await dbSaveChannels();
+      // Join cache clear karo taaki next check fresh ho
+      joinCache.clear();
+      await tgApi("editMessageText", {
+        chat_id: chatId, message_id: msgId,
+        text: channelManagerText(),
+        parse_mode: "MarkdownV2",
+        reply_markup: channelManagerKb()
+      });
+      await sendPlain(chatId,
+        `╔══════════════════════════╗\n║  🗑️  CHANNEL REMOVED      ║\n╠══════════════════════════╣\n` +
+        `📢  Removed : ${removed.name}\n📊  Total   : ${CHANNELS.length} channels\n╚══════════════════════════╝`
+      );
+    } else {
+      await sendPlain(chatId, "❌  Channel nahi mila.");
     }
     return;
   }
@@ -912,7 +1085,8 @@ async function handleCallback(cb) {
     await sendPlain(chatId,
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
       "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
-      "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚══════════════════════════╝"
+      "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n" +
+      "📢 /channelmanager\n╚══════════════════════════╝"
     );
     return;
   }
@@ -935,7 +1109,8 @@ async function handleUpdate(update) {
     if (!text) return;
 
     if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin",
-        "/setcustomtg","/delcustomtg","/setcustomnum","/delcustomnum","/listcustom","/dbbackup","/apimanager"]
+        "/setcustomtg","/delcustomtg","/setcustomnum","/delcustomnum","/listcustom","/dbbackup",
+        "/apimanager","/channelmanager"]
         .some(c => text.toLowerCase().startsWith(c))) {
       return await handleAdminText(chatId, from.id, text);
     }
@@ -945,6 +1120,7 @@ async function handleUpdate(update) {
 
     if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
+    // API off message set flow
     if (typeof choice === "string" && choice.startsWith("api_offmsg::") && _isAdmin) {
       const key = choice.split("::")[1];
       userState.delete(from.id);
@@ -953,6 +1129,16 @@ async function handleUpdate(update) {
         apiToggle[key].offMsg = text.trim();
         await sendPlain(chatId, `✅  ${apiToggle[key].label} ka off message set ho gaya!\n\n"${text.trim()}"`);
       }
+      return;
+    }
+
+    // Channel add flow
+    if (_isAdmin && (
+      choice === "ch_add_step1" ||
+      (typeof choice === "string" && choice.startsWith("ch_add_step2::")) ||
+      (typeof choice === "string" && choice.startsWith("ch_add_step3::"))
+    )) {
+      await handleChannelAddFlow(chatId, from, text, choice);
       return;
     }
 
@@ -996,8 +1182,28 @@ async function handleUpdate(update) {
 
 async function handleAdminText(chatId, userId, text) {
   const lower = text.toLowerCase();
-  if (lower === "/admin") { await sendPlain(chatId, "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚══════════════════════════╝"); return; }
+  if (lower === "/admin") {
+    await sendPlain(chatId,
+      "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
+      "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
+      "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n" +
+      "📋 /listcustom  🔌 /apimanager\n📢 /channelmanager\n╚══════════════════════════╝"
+    );
+    return;
+  }
   if (lower === "/apimanager") { await sendPlain(chatId, apiManagerText(), { reply_markup: apiManagerKb() }); return; }
+
+  // ── /channelmanager command ──
+  if (lower === "/channelmanager") {
+    await tgApi("sendMessage", {
+      chat_id: chatId,
+      text: channelManagerText(),
+      parse_mode: "MarkdownV2",
+      reply_markup: channelManagerKb()
+    });
+    return;
+  }
+
   if (lower.startsWith("/broadcast")) {
     const msgText = text.slice("/broadcast".length).trim();
     if (!msgText) { await sendPlain(chatId, "❌  Usage: /broadcast <message>"); return; }
@@ -1123,14 +1329,16 @@ app.get("/", (_req, res) => res.send("RTF Bot is running ✅"));
 async function start() {
   if (!BOT_TOKEN) { console.error("[BOT] BOT_TOKEN not set! Exiting."); process.exit(1); }
   await initDb();
+  await dbLoadChannels(); // DB se channels load karo
   await setMyCommands([
-    { command: "start",   description: "🏠 Main Menu" },
-    { command: "num",     description: "📞 Number Lookup" },
-    { command: "tg",      description: "🔎 TG Username / UserID" },
-    { command: "adhar",   description: "🪪 Aadhaar Lookup" },
-    { command: "upi",     description: "💳 UPI ID Lookup" },
-    { command: "vehicle", description: "🚗 Vehicle Lookup" },
-    { command: "help",    description: "❓ Help Guide" },
+    { command: "start",          description: "🏠 Main Menu" },
+    { command: "num",            description: "📞 Number Lookup" },
+    { command: "tg",             description: "🔎 TG Username / UserID" },
+    { command: "adhar",          description: "🪪 Aadhaar Lookup" },
+    { command: "upi",            description: "💳 UPI ID Lookup" },
+    { command: "vehicle",        description: "🚗 Vehicle Lookup" },
+    { command: "help",           description: "❓ Help Guide" },
+    { command: "channelmanager", description: "📢 Channel Manager (Admin)" },
   ]);
   if (WEBHOOK_URL) {
     const wh = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
