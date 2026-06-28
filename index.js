@@ -19,8 +19,8 @@ const OWNER       = "@RTFGAMMING";
 
 // ── API URLs ──────────────────────────────────
 const NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123";
-const DEEP_API_URL    = "https://l34k-osint.onrender.com/search?key=4e7feeb644fb638362361a94e7e43691&query={number}";
-const ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}";
+const DEEP_API_URL    = "https://rootx-osint.in/?type=num&key=RootXIndia&query={number}";
+const ADHAR_API_URL   = "https://aadhar-to-family-impds-info-api.onrender.com/search-aadhaar?search=A&aadhaar={number}";
 const TG_API_URL      = "https://rootx-osint.in/?type=tg_num&key=Jack_The_Dack&query={query}";
 const UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}";
 const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}";
@@ -29,7 +29,7 @@ const VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rt
 let CHANNELS = [
   { name: "🔥 RTF GAMING",  username: "RTFGAMING1",     id: null },
   { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0", id: null },
-  { name: "🎁 BACKUP",    username: "USERX1NFO", id: null },
+  { name: "🎁 BACKUP",      username: "USERX1NFO",      id: null },
 ];
 
 const JOINED_STATUSES = new Set(["member","administrator","creator","restricted"]);
@@ -202,10 +202,9 @@ async function sendDataFound(chatId, userMsgId, text) {
 const joinCache = new Map();
 const JOIN_CACHE_TTL = 60_000;
 
-// Channel ka chat_id resolve karta hai (username ya numeric ID)
 function resolveChannelId(ch) {
-  if (ch.id) return ch.id; // numeric ID (private channel)
-  if (ch.username) return `@${ch.username}`; // public username
+  if (ch.id) return ch.id;
+  if (ch.username) return `@${ch.username}`;
   return null;
 }
 
@@ -240,7 +239,6 @@ async function sendJoinPrompt(chatId) {
   const missing = await getNotJoinedChannels(chatId);
   if (!missing.length) return false;
   const buttons = missing.map(ch => {
-    // Public channel = direct link, private = invite link agar hai
     const url = ch.invite_link
       ? ch.invite_link
       : ch.username
@@ -361,6 +359,7 @@ function apiManagerText() {
 //  FORMAT HELPERS
 // ══════════════════════════════════════════════
 
+// ── NUM API response parse ────────────────────
 function extractRecords(data) {
   const records = [];
   try {
@@ -398,100 +397,110 @@ function formatNumResult(records, number) {
   return out;
 }
 
-function parseNewDeepApiResponse(apiData) {
+// ── NEW DEEP API (rootx-osint.in ?type=num) ───
+// Response: array of objects with NAME, fname, ADDRESS, circle, MOBILE, alt, id
+// Last object has req_left, req_total, expiry, developer — skip it
+
+function parseDeepApiResponse(data) {
   try {
-    if (!apiData || !apiData.status) return null;
-    const dataObj = apiData.data;
-    if (!dataObj || typeof dataObj !== "object") return null;
-    const allRecords = [];
-    for (const srcKey of Object.keys(dataObj)) {
-      const src = dataObj[srcKey];
-      if (!src || !Array.isArray(src.records)) continue;
-      for (const rec of src.records) {
-        if (!rec || typeof rec !== "object") continue;
-        allRecords.push(rec);
-      }
+    let arr = Array.isArray(data) ? data : (data && Array.isArray(data.result) ? data.result : null);
+    if (!arr || !arr.length) return null;
+
+    const records = [];
+    for (const item of arr) {
+      // Skip metadata object (has req_left / developer field)
+      if (item.req_left !== undefined || item.developer !== undefined) continue;
+      if (!item.NAME && !item.MOBILE) continue;
+      records.push({
+        name:    String(item.NAME    || "").trim(),
+        fname:   String(item.fname   || "").trim(),
+        address: String(item.ADDRESS || "").trim(),
+        circle:  String(item.circle  || "").trim(),
+        mobile:  String(item.MOBILE  || "").trim(),
+        alt:     String(item.alt     || "").trim(),
+        id:      String(item.id      || "").trim(),
+      });
     }
-    if (!allRecords.length) return null;
-    return allRecords;
-  } catch (e) { console.error("[parseNewDeepApi]", e.message); return null; }
+    return records.length ? records : null;
+  } catch (e) { console.error("[parseDeepApiResponse]", e.message); return null; }
 }
 
-function formatNewDeepResult(records, queryNumber) {
+function formatDeepResult(records, queryNumber) {
   if (!records || !records.length) return null;
+  const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
   let text =
     `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `│  🕵️  D E E P   I N T E L   │\n` +
     `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
-  const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
+
   records.forEach((rec, i) => {
     const dot = colors[i % colors.length];
     text += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
-    if (rec.FullName)   text += `${cbMd("🧑 Full Name  ", rec.FullName)}\n`;
-    if (rec.FatherName) text += `${cbMd("👨 Father    ", rec.FatherName)}\n`;
-    const phones = [rec.Phone, rec.Phone2, rec.Phone3, rec.Phone4, rec.Phone5]
-      .filter(p => p && String(p).trim() !== "" && String(p).trim() !== "undefined");
-    if (phones.length) {
-      const unique = [...new Set(phones.map(p => String(p).trim()))];
-      text += `📞━━ PHONES \\(${unique.length}\\) ━━📞\n`;
-      const clrs = ["🔴","🟠","🟡","🟢","🔵","🟣","🔘"];
-      unique.forEach((mob, mi) => { text += `${clrs[mi % clrs.length]}  \`${escMd(mob)}\`\n`; });
-    }
-    const addrs = [rec.Adres, rec.Adres2, rec.Adres3]
-      .filter(a => a && String(a).trim() !== "" && String(a).trim() !== "undefined");
-    if (addrs.length) {
-      const unique = [...new Set(addrs.map(a => String(a).trim()))];
-      text += `📍━━ ADDRESSES \\(${unique.length}\\) ━━📍\n`;
-      unique.forEach(addr => { text += `🔸  ${escMd(addr)}\n`; });
-    }
-    if (rec.Region && String(rec.Region).trim()) text += `${cbMd("📡 Network   ", rec.Region)}\n`;
+    if (rec.name)    text += `${cbMd("👤 Name   ", rec.name)}\n`;
+    if (rec.fname)   text += `${cbMd("👨 Father ", rec.fname)}\n`;
+    if (rec.mobile)  text += `${cbMd("📞 Mobile ", rec.mobile)}\n`;
+    if (rec.alt)     text += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
+    if (rec.address) text += `${cbMd("📍 Address", rec.address)}\n`;
+    if (rec.circle)  text += `${cbMd("📡 Circle ", rec.circle)}\n`;
+    if (rec.id)      text += `${cbMd("🪪 Aadhar ", rec.id)}\n`;
     text += "\n";
   });
+
   text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
   return text;
 }
 
+// ── NEW AADHAAR API FORMAT ────────────────────
 function formatAdharResult(data, adharNumber) {
   try {
-    if (!data || !data.success) return null;
-    const details = data.details || {};
-    const card    = details.card_info        || {};
-    const members = details.members          || [];
-    const monthly = details.monthly_summary  || [];
+    if (!data || !data.success || !Array.isArray(data.results) || !data.results.length) return null;
+
+    const result = data.results[0];
+    const rc     = result.ration_card_details || {};
+    const addInfo = result.additional_info    || {};
+    const members = result.members            || [];
+
     let out =
       `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
-      `🔢  Aadhaar     : \`${escMd(adharNumber)}\`\n${cbMd("🪪  RC ID       ", data.ration_card_id)}\n\n`;
-    if (Object.keys(card).length) {
+      `🔢  Aadhaar : \`${escMd(adharNumber)}\`\n\n`;
+
+    // Ration Card Details
+    if (Object.keys(rc).length) {
       out += `📋━━━ RATION CARD ━━━📋\n`;
-      if (card["Card Type"])  out += `${cbMd("📌 Card Type   ", card["Card Type"])}\n`;
-      if (card["Scheme"])     out += `${cbMd("📋 Scheme      ", card["Scheme"])}\n`;
-      if (card["State"])      out += `${cbMd("🗺️  State       ", card["State"])}\n`;
-      if (card["District"])   out += `${cbMd("📍 District    ", card["District"])}\n`;
-      if (card["Issue Date"]) out += `${cbMd("📅 Issue Date  ", card["Issue Date"])}\n`;
-      if (card["Home FPS"])   out += `${cbMd("🏪 Home FPS    ", card["Home FPS"])}\n`;
-      if (card["Address"] && card["Address"] !== "null") out += `${cbMd("🏠 Address     ", card["Address"])}\n`;
+      if (rc.ration_card_no) out += `${cbMd("🆔 RC Number  ", rc.ration_card_no)}\n`;
+      if (rc.scheme_name)    out += `${cbMd("📋 Scheme     ", rc.scheme_name)}\n`;
+      if (rc.state_name)     out += `${cbMd("🗺️  State      ", rc.state_name)}\n`;
+      if (rc.district_name)  out += `${cbMd("📍 District   ", rc.district_name)}\n`;
       out += "\n";
     }
+
+    // Additional Info
+    const impds   = addInfo.impds_transaction_allowed;
+    const central = addInfo.exists_in_central_repository;
+    const fpsType = addInfo.fps_category;
+    if (impds !== undefined || central !== undefined || fpsType) {
+      out += `ℹ️━━━ ADDITIONAL INFO ━━━ℹ️\n`;
+      if (central  !== undefined) out += `🏛️  Central Repo   : ${central  ? "✅ YES" : "❌ NO"}\n`;
+      if (impds    !== undefined) out += `💸 IMPDS Allowed  : ${impds    ? "✅ YES" : "❌ NO"}\n`;
+      if (fpsType)                out += `🏪 FPS Category   : \`${escMd(fpsType)}\`\n`;
+      out += "\n";
+    }
+
+    // Family Members
     if (members.length) {
       out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
-      const genderIcon = g => (g||"").toLowerCase() === "f" ? "👩" : (g||"").toLowerCase() === "m" ? "👨" : "🧑";
       const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"];
       members.forEach((m, i) => {
         const dot = colors[i % colors.length];
         out +=
-          `${dot}━━ ${i+1}\\. ${escMd(m.member_name || "N/A")} ${genderIcon(m.gender)}\n` +
-          `   📋 Relation  : ${escMd(m.relationship || "N/A")}\n` +
-          `   🆔 UID       : \`${escMd(m.uid_masked || "N/A")}\`\n` +
-          `   ✅ eKYC      : ${m.ekyc_status === "Y" ? "✅" : "❌"}\n` +
-          `   📅 Updated   : ${escMd(m.cr_last_updated || "N/A")}\n\n`;
+          `${dot}━━ ${escMd(m.s_no || String(i+1))}\\. ${escMd(m.member_name || "N/A")}\n` +
+          `   🆔 Member ID : \`${escMd(m.member_id || "N/A")}\`\n`;
+        if (m.remark && m.remark.trim()) out += `   📝 Remark    : ${escMd(m.remark)}\n`;
+        out += "\n";
       });
     }
-    if (monthly.length) {
-      out += `📊━━━ RECENT MONTHS ━━━📊\n`;
-      monthly.slice(0,3).forEach(m => { out += `📅 ${escMd(m.month)}  \\|  👥 Members: ${escMd(m.member_count)}\n`; });
-      out += "\n";
-    }
+
     out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
     return out;
   } catch (e) { console.error("[formatAdhar]", e.message); return null; }
@@ -669,16 +678,17 @@ async function fetchNumApi(cleanPhone) {
   } catch (e) { console.error("[NUM API]", e.message); return []; }
 }
 
+// Deep API — rootx-osint.in ?type=num — bina 91 ke query
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
-  let raw = String(number).replace(/[+\s]/g,"");
-  if (raw.length === 10) raw = "91" + raw;
-  console.log(`[DEEP API] Querying: ${raw}`);
+  // Clean: sirf 10 digit, no 91 prefix
+  let clean = String(number).replace(/[+\s]/g, "").replace(/^91/, "");
+  if (clean.length > 10) clean = clean.slice(-10);
+  console.log(`[DEEP API] Querying: ${clean}`);
   try {
-    const data = await apiFetch(DEEP_API_URL.replace("{number}", raw), 30000);
-    console.log(`[DEEP API] Response status: ${data && data.status}`);
-    if (!data || typeof data !== "object") return null;
-    return data;
+    const data = await apiFetch(DEEP_API_URL.replace("{number}", clean), 30000);
+    console.log(`[DEEP API] Response type: ${typeof data}, isArray: ${Array.isArray(data)}`);
+    return data || null;
   } catch (e) { console.error("[DEEP API]", e.message); return null; }
 }
 
@@ -717,13 +727,16 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
   try {
     let clean = number.trim().replace(/\s/g,"").replace("+91","");
     if (clean.startsWith("91") && clean.length > 10) clean = clean.slice(2);
+
     const [records, deepApiRaw] = await Promise.all([
       fetchNumApi(clean),
-      fetchDeepApi(number),
+      fetchDeepApi(clean),
     ]);
     deleteMessage(chatId, statusMsg.message_id);
-    const deepRecords = parseNewDeepApiResponse(deepApiRaw);
-    const deepFmt     = formatNewDeepResult(deepRecords, clean);
+
+    const deepRecords = parseDeepApiResponse(deepApiRaw);
+    const deepFmt     = formatDeepResult(deepRecords, clean);
+
     if (!records.length && !deepFmt) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: ${clean}\n⚠️  Koi record nahi mila`);
       return;
@@ -784,15 +797,15 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       `${cbMd("📱 Country Code", result.countryCode)}\n` +
       `└─────────────────────────┘\n`;
     if (result.phone) {
-      let cleanPhone = result.phone.replace(/[+\s]/g, "");
-      if (cleanPhone.startsWith("91") && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(2);
+      let cleanPhone = result.phone.replace(/[+\s]/g, "").replace(/^91/, "");
+      if (cleanPhone.length > 10) cleanPhone = cleanPhone.slice(-10);
       const [numRes, deepApiRaw] = await Promise.all([
         fetchNumApi(cleanPhone),
-        fetchDeepApi(result.phone),
+        fetchDeepApi(cleanPhone),
       ]);
       if (numRes.length && apiToggle.num.enabled) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
-      const deepRecords = parseNewDeepApiResponse(deepApiRaw);
-      const df = formatNewDeepResult(deepRecords, cleanPhone);
+      const deepRecords = parseDeepApiResponse(deepApiRaw);
+      const df = formatDeepResult(deepRecords, cleanPhone);
       if (df) tgBlock += df;
     }
     await sendDataFound(chatId, userMsgId, tgBlock);
@@ -804,17 +817,30 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
 }
 
 async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
-  if (!apiToggle.adhar.enabled) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.adhar.offMsg}`); return; }
+  if (!apiToggle.adhar.enabled) {
+    await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.adhar.offMsg}`);
+    return;
+  }
   const statusMsg = await sendPlain(chatId, `🔍  Searching Aadhaar: ${adharRaw} ...`);
   try {
-    const data = await apiFetch(ADHAR_API_URL.replace("{number}", adharRaw));
+    const data = await apiFetch(ADHAR_API_URL.replace("{number}", adharRaw.trim()), 30000);
     deleteMessage(chatId, statusMsg.message_id);
-    if (!data || !data.success) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: ${adharRaw}`); return; }
+    if (!data || !data.success || !data.results || !data.results.length) {
+      await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: ${adharRaw}`);
+      return;
+    }
     const formatted = formatAdharResult(data, adharRaw);
-    if (!formatted) { await sendDataNotFound(chatId, userMsgId, `❌  Data format error — Aadhaar: ${adharRaw}`); return; }
+    if (!formatted) {
+      await sendDataNotFound(chatId, userMsgId, `❌  Data format error — Aadhaar: ${adharRaw}`);
+      return;
+    }
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, formatted);
-  } catch (e) { console.error("[ADHAR]", e.message); deleteMessage(chatId, statusMsg.message_id); await sendPlain(chatId, "❌  API Error / Timeout."); }
+  } catch (e) {
+    console.error("[ADHAR]", e.message);
+    deleteMessage(chatId, statusMsg.message_id);
+    await sendPlain(chatId, "❌  API Error / Timeout.");
+  }
 }
 
 async function handleUpi(chatId, upiId, userMsgId = null, userId = null) {
@@ -846,26 +872,18 @@ async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null)
 //  CHANNEL ADD FLOW HANDLER
 // ══════════════════════════════════════════════
 
-// Channel add karne ka state flow:
-// ch_add_step1 → user channel username/ID bhejta hai
-// ch_add_step2::<ref> → user channel name bhejta hai
-// ch_add_step3::<ref>::<name> → private channel ke liye invite link (optional)
-
 async function handleChannelAddFlow(chatId, from, text, choice) {
 
-  // STEP 1: Username ya ID receive kiya
   if (choice === "ch_add_step1") {
     const raw = text.trim();
-    let ref = raw.replace(/^@/, ""); // username bina @
+    let ref = raw.replace(/^@/, "");
     let isPrivate = false;
 
-    // Check karo private ID hai ya username
     if (raw.startsWith("-100") || /^-\d+$/.test(raw)) {
       isPrivate = true;
-      ref = raw; // numeric ID as-is
+      ref = raw;
     }
 
-    // Validate karo — bot se getChatMember try karo
     const statusMsg = await sendPlain(chatId, `🔍 Channel verify ho raha hai: ${raw} ...`);
     const testResult = await tgApi("getChat", { chat_id: isPrivate ? parseInt(ref) : `@${ref}` });
     deleteMessage(chatId, statusMsg.message_id);
@@ -880,7 +898,6 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
       return;
     }
 
-    // Channel title already available
     const autoName = testResult.title || "";
     userState.set(from.id, `ch_add_step2::${isPrivate ? "id:" + ref : "user:" + ref}::${autoName}`);
 
@@ -895,10 +912,9 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
     return;
   }
 
-  // STEP 2: Name receive kiya
   if (typeof choice === "string" && choice.startsWith("ch_add_step2::")) {
     const parts   = choice.split("::");
-    const refPart = parts[1]; // "id:-100xxx" ya "user:username"
+    const refPart = parts[1];
     const autoName = parts.slice(2).join("::") || "";
 
     const displayName = text.trim().toLowerCase() === "skip"
@@ -908,7 +924,6 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
     const isPrivate  = refPart.startsWith("id:");
     const refValue   = refPart.replace(/^(id:|user:)/, "");
 
-    // Private channel ke liye invite link optional
     if (isPrivate) {
       userState.set(from.id, `ch_add_step3::${refPart}::${displayName}`);
       await sendPlain(chatId,
@@ -919,7 +934,6 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
       return;
     }
 
-    // Public channel — seedha add karo
     CHANNELS.push({ name: displayName, username: refValue, id: null, invite_link: null });
     await dbSaveChannels();
     userState.delete(from.id);
@@ -931,7 +945,6 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
     return;
   }
 
-  // STEP 3: Private channel invite link
   if (typeof choice === "string" && choice.startsWith("ch_add_step3::")) {
     const parts      = choice.split("::");
     const refPart    = parts[1];
@@ -1007,7 +1020,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── CHANNEL MANAGER CALLBACKS ──
   if (data === "menu_channels" && _isAdmin) {
     await answerCallback(cb.id);
     await tgApi("editMessageText", {
@@ -1038,7 +1050,6 @@ async function handleCallback(cb) {
     if (!isNaN(idx) && CHANNELS[idx]) {
       const removed = CHANNELS.splice(idx, 1)[0];
       await dbSaveChannels();
-      // Join cache clear karo taaki next check fresh ho
       joinCache.clear();
       await tgApi("editMessageText", {
         chat_id: chatId, message_id: msgId,
@@ -1120,7 +1131,6 @@ async function handleUpdate(update) {
 
     if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
-    // API off message set flow
     if (typeof choice === "string" && choice.startsWith("api_offmsg::") && _isAdmin) {
       const key = choice.split("::")[1];
       userState.delete(from.id);
@@ -1132,7 +1142,6 @@ async function handleUpdate(update) {
       return;
     }
 
-    // Channel add flow
     if (_isAdmin && (
       choice === "ch_add_step1" ||
       (typeof choice === "string" && choice.startsWith("ch_add_step2::")) ||
@@ -1193,7 +1202,6 @@ async function handleAdminText(chatId, userId, text) {
   }
   if (lower === "/apimanager") { await sendPlain(chatId, apiManagerText(), { reply_markup: apiManagerKb() }); return; }
 
-  // ── /channelmanager command ──
   if (lower === "/channelmanager") {
     await tgApi("sendMessage", {
       chat_id: chatId,
@@ -1329,7 +1337,7 @@ app.get("/", (_req, res) => res.send("RTF Bot is running ✅"));
 async function start() {
   if (!BOT_TOKEN) { console.error("[BOT] BOT_TOKEN not set! Exiting."); process.exit(1); }
   await initDb();
-  await dbLoadChannels(); // DB se channels load karo
+  await dbLoadChannels();
   await setMyCommands([
     { command: "start",          description: "🏠 Main Menu" },
     { command: "num",            description: "📞 Number Lookup" },
