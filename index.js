@@ -1,1664 +1,1574 @@
-"use strict";
+import os
+import re
+import json
+import time
+import threading
+import logging
+from datetime import datetime, timezone
+from urllib.parse import quote_plus
 
-const express         = require("express");
-const fetch           = require("node-fetch");
-const FormData        = require("form-data");
-const { MongoClient } = require("mongodb");
-const http            = require("http");
-const https           = require("https");
+import requests
 
-const app = express();
-app.use(express.json({ limit: "1mb" }));
+# ── Logging ──────────────────────────────────
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-// ── CONFIG ──────────────────────────────────
-const BOT_TOKEN   = process.env.BOT_TOKEN   || "";
-const MONGO_URI   = process.env.MONGO_URI   || "";
-const PORT        = process.env.PORT        || 3000;
-const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
-const OWNER       = "@RTFGAMMING";
+# ── Config ──────────────────────────────────
+BOT_TOKEN = "8765184537:AAG6S0ggdA6MH6nDEeFv6prwZ_HrJhV9wCg"
+OWNER = "@RTFGAMMING"
 
-// ── API URLs (dynamic — admin se change ho sakti hain) ──────────────────────
-const DEFAULT_API_URLS = {
-  num:     "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={query}&key=mysecretkey123",
-  deep:    "https://rootx-osint.in/?type=num&key=RootXIndia&query={query}",
-  tg:      "https://rootx-osint.in/?type=tg_num&key=Jack_The_Dack&query={query}",
-  adhar:   "https://aadhar-to-family-impds-info-api.onrender.com/search-aadhaar?search=A&aadhaar={query}",
-  upi:     "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={query}",
-  vehicle: "https://vehicle.suryahacker.workers.dev/fetch?query={query}",
-};
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN not set!")
+    exit(1)
 
-// Runtime mein yahi use hoga (DB se override hoga)
-let apiUrls = { ...DEFAULT_API_URLS };
+# ── File storage setup ──────────────────────
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+SAVED_DATA_FILE = os.path.join(DATA_DIR, "saved_data.json")
 
-// API response display config — kaunsa field user ko dikhana hai
-// "raw" = pura response dikhao (default formatters use karo)
-// "field:xyz" = response ka xyz field dikhao
-const DEFAULT_API_RESPONSE_CONFIG = {
-  num:     "raw",
-  deep:    "raw",
-  tg:      "raw",
-  adhar:   "raw",
-  upi:     "raw",
-  vehicle: "raw",
-};
-let apiResponseConfig = { ...DEFAULT_API_RESPONSE_CONFIG };
+users_db = {}
+saved_data_db = {}
+users_db_lock = threading.Lock()
+saved_data_lock = threading.Lock()
 
-// ── CHANNELS (dynamic, DB se load hoga) ───────
-let CHANNELS = [
-  { name: "🔥 RTF GAMING",  username: "RTFGAMING1",     id: null },
-  { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0", id: null },
-  { name: "🎁 BACKUP",      username: "USERX1NFO",      id: null },
-];
+def load_json_file(filepath, default):
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
 
-const JOINED_STATUSES = new Set(["member","administrator","creator","restricted"]);
+def save_json_file(filepath, data):
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
-let admins          = ["@rtfgamming"];
-const userState     = new Map();
-const customTgData  = new Map();
-const customNumData = new Map();
+def load_databases():
+    global users_db, saved_data_db
+    users_db = load_json_file(USERS_FILE, {})
+    saved_data_db = load_json_file(SAVED_DATA_FILE, {})
+    logger.info("Databases loaded from file")
 
-// ══════════════════════════════════════════════
-//  API TOGGLE SYSTEM
-// ══════════════════════════════════════════════
-const apiToggle = {
-  num:     { enabled: true, label: "📞 Number API",    offMsg: "❌ Number lookup abhi available nahi hai." },
-  deep:    { enabled: true, label: "🔬 Deep Intel API", offMsg: "❌ Deep data lookup abhi available nahi hai." },
-  tg:      { enabled: true, label: "🔎 TG Lookup API",  offMsg: "❌ TG lookup abhi available nahi hai. Thodi der baad try karo." },
-  adhar:   { enabled: true, label: "🪪 Aadhaar API",    offMsg: "❌ Aadhaar lookup abhi available nahi hai." },
-  upi:     { enabled: true, label: "💳 UPI API",        offMsg: "❌ UPI lookup abhi available nahi hai." },
-  vehicle: { enabled: true, label: "🚗 Vehicle API",    offMsg: "❌ Vehicle lookup abhi available nahi hai." },
-};
+def save_users():
+    with users_db_lock:
+        save_json_file(USERS_FILE, users_db)
 
-const API_KEYS = ["num","deep","tg","adhar","upi","vehicle"];
-const API_LABELS = {
-  num:     "📞 Number API",
-  deep:    "🔬 Deep Intel API",
-  tg:      "🔎 TG Lookup API",
-  adhar:   "🪪 Aadhaar API",
-  upi:     "💳 UPI API",
-  vehicle: "🚗 Vehicle API",
-};
+def save_saved_data():
+    with saved_data_lock:
+        save_json_file(SAVED_DATA_FILE, saved_data_db)
 
-// ── CONCURRENCY CONTROL ───────────────────────
-const userQueue = new Map();
-function queueForUser(userId, taskFn) {
-  const prev = userQueue.get(userId) || Promise.resolve();
-  const next = prev.then(() => taskFn()).catch(e => console.error(`[QUEUE] uid=${userId}`, e.message));
-  userQueue.set(userId, next);
-  next.finally(() => { if (userQueue.get(userId) === next) userQueue.delete(userId); });
-  return next;
+# ── DB Functions (file-based) ───────────────
+def db_save_user(from_data):
+    user_id = from_data["id"]
+    now = datetime.now(timezone.utc).isoformat()
+    with users_db_lock:
+        if user_id not in users_db:
+            users_db[user_id] = {
+                "user_id": user_id,
+                "username": from_data.get("username", ""),
+                "name": " ".join(filter(None, [from_data.get("first_name", ""), from_data.get("last_name", "")])),
+                "first_name": from_data.get("first_name", ""),
+                "last_name": from_data.get("last_name", ""),
+                "first_seen": now,
+                "total_searches": 0
+            }
+        else:
+            users_db[user_id]["username"] = from_data.get("username", "")
+            users_db[user_id]["name"] = " ".join(filter(None, [from_data.get("first_name", ""), from_data.get("last_name", "")]))
+            users_db[user_id]["first_name"] = from_data.get("first_name", "")
+            users_db[user_id]["last_name"] = from_data.get("last_name", "")
+        users_db[user_id]["last_seen"] = now
+    save_users()
+
+def db_incr_search(user_id):
+    with users_db_lock:
+        if user_id in users_db:
+            users_db[user_id]["total_searches"] = users_db[user_id].get("total_searches", 0) + 1
+    save_users()
+
+def db_save_data(key, value):
+    with saved_data_lock:
+        saved_data_db[key] = {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()}
+    save_saved_data()
+
+def db_get_all_users():
+    with users_db_lock:
+        return list(users_db.values())
+
+def db_user_count():
+    with users_db_lock:
+        return len(users_db)
+
+# ── API URLs ──────────────────────────────────
+NUM_API_URL     = "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={number}&key=mysecretkey123"
+# UPDATED Deep API – using new service
+DEEP_API_URL    = "https://l34k-osint.onrender.com/search?key=4e7feeb644fb638362361a94e7e43691&query={query}"
+ADHAR_API_URL   = "https://atof.onrender.com/full-search?aadhaar={number}"
+TG_NEW_API_URL  = "https://rootx-osint.in/?type=tg_num&key=userxinfo&query={term}"   # rootx TG API
+UPI_API_URL     = "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={upi}"
+VEHICLE_API_URL = "https://krish-osintoy.lovable.app/api/v1/vehicle?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&vehicle={vehicle}"
+
+CHANNELS = [
+    {"name": "🔥 RTF GAMING", "username": "RTFGMINGGC"},
+    {"name": "🎁 GIVEAWAY", "username": "RTFGAMINGHACK0"},
+    {"name": "💀 RTF ERA", "username": "BYEPAASLINK"},
+]
+JOINED_STATUSES = {"member", "administrator", "creator", "restricted"}
+
+admins = ["@rtfgamming"]
+user_state = {}
+custom_tg_data = {}
+custom_num_data = {}
+
+# ── API Toggle ──────────────────────────────
+api_toggle = {
+    "num": {"enabled": True, "label": "📞 Number API", "offMsg": "❌ Number lookup abhi available nahi hai."},
+    "deep": {"enabled": True, "label": "🔬 Deep Intel API", "offMsg": "❌ Deep data lookup abhi available nahi hai."},
+    "tg": {"enabled": True, "label": "🔎 TG API", "offMsg": "❌ TG lookup abhi available nahi hai."},
+    "adhar": {"enabled": True, "label": "🪪 Aadhaar API", "offMsg": "❌ Aadhaar lookup abhi available nahi hai."},
+    "upi": {"enabled": True, "label": "💳 UPI API", "offMsg": "❌ UPI lookup abhi available nahi hai."},
+    "vehicle": {"enabled": True, "label": "🚗 Vehicle API", "offMsg": "❌ Vehicle lookup abhi available nahi hai."},
 }
+API_KEYS = list(api_toggle.keys())
 
-// ── MongoDB ──────────────────────────────────
-let mongoClient, db, usersCol, dataCol;
+# ── Concurrency Control ─────────────────────
+user_queue = {}
+queue_lock = threading.Lock()
 
-async function initDb() {
-  if (!MONGO_URI) { console.warn("[DB] MONGO_URI not set"); return; }
-  try {
-    mongoClient = new MongoClient(MONGO_URI, {
-      maxPoolSize: 100, minPoolSize: 10,
-      serverSelectionTimeoutMS: 8000, connectTimeoutMS: 8000, socketTimeoutMS: 30000,
-    });
-    await mongoClient.connect();
-    db       = mongoClient.db("rtfbot");
-    usersCol = db.collection("users");
-    dataCol  = db.collection("saved_data");
-    await usersCol.createIndex({ user_id: 1 }, { unique: true });
-    await dataCol.createIndex({ key: 1 });
-    console.log("[DB] MongoDB connected ✅");
-  } catch (e) { console.error("[DB ERROR]", e.message); mongoClient = null; }
-}
+def queue_for_user(user_id, func, *args, **kwargs):
+    with queue_lock:
+        user_lock = user_queue.get(user_id)
+        if user_lock is None:
+            user_lock = threading.Lock()
+            user_queue[user_id] = user_lock
+        def run():
+            with user_lock:
+                try:
+                    func(*args, **kwargs)
+                except Exception as e:
+                    logger.error(f"Error in queued task for {user_id}: {e}")
+        threading.Thread(target=run, daemon=True).start()
 
-// ── DB SAVE/LOAD ──────────────────────────────
-async function dbSaveChannels() {
-  if (!dataCol) return;
-  try {
-    await dataCol.updateOne({ key: "channels" }, { $set: { key: "channels", value: CHANNELS, updated_at: new Date().toISOString() } }, { upsert: true });
-  } catch (e) { console.error("[DB SAVE CHANNELS]", e.message); }
-}
+# ── Telegram API ─────────────────────────────
+TG_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-async function dbLoadChannels() {
-  if (!dataCol) return;
-  try {
-    const doc = await dataCol.findOne({ key: "channels" });
-    if (doc && Array.isArray(doc.value) && doc.value.length > 0) {
-      CHANNELS = doc.value;
-      console.log(`[DB] Loaded ${CHANNELS.length} channels ✅`);
+def tg_request(method, payload=None, files=None, timeout=20):
+    url = f"{TG_BASE}/{method}"
+    try:
+        if files:
+            resp = requests.post(url, data=payload, files=files, timeout=timeout)
+        else:
+            headers = {"Content-Type": "application/json"} if payload else {}
+            resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("ok"):
+            logger.error(f"TG {method} error: {data.get('description')}")
+            return None
+        return data.get("result")
+    except requests.exceptions.Timeout:
+        logger.error(f"TG {method} timeout")
+        return None
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 400:
+            logger.debug(f"TG {method} 400 error: {e}")
+        else:
+            logger.error(f"TG {method} HTTP error: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"TG {method} request error: {e}")
+        return None
+
+def esc_md(text):
+    if text is None:
+        return ""
+    return re.sub(r"([_*[\]()~`>#+=|{}.!\\-])", r"\\\1", str(text))
+
+def cb_md(label, value):
+    v = str(value).strip() if value is not None else ""
+    if v and v not in ("N/A", "", "None", "null", "nan", "undefined"):
+        return f"{esc_md(label)}: `{esc_md(v)}`"
+    return f"{esc_md(label)}: ❌ N/A"
+
+def send_message(chat_id, text, extra=None):
+    if not text or not text.strip():
+        logger.warning(f"Attempted to send empty message to {chat_id}")
+        return None
+    if extra is None:
+        extra = {}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "MarkdownV2",
+        "disable_web_page_preview": True,
+        **extra
     }
-  } catch (e) { console.error("[DB LOAD CHANNELS]", e.message); }
-}
+    return tg_request("sendMessage", payload)
 
-async function dbSaveApiUrls() {
-  if (!dataCol) return;
-  try {
-    await dataCol.updateOne(
-      { key: "api_urls" },
-      { $set: { key: "api_urls", value: apiUrls, updated_at: new Date().toISOString() } },
-      { upsert: true }
-    );
-    await dataCol.updateOne(
-      { key: "api_response_config" },
-      { $set: { key: "api_response_config", value: apiResponseConfig, updated_at: new Date().toISOString() } },
-      { upsert: true }
-    );
-  } catch (e) { console.error("[DB SAVE API URLS]", e.message); }
-}
-
-async function dbLoadApiUrls() {
-  if (!dataCol) return;
-  try {
-    const doc = await dataCol.findOne({ key: "api_urls" });
-    if (doc && doc.value && typeof doc.value === "object") {
-      apiUrls = { ...DEFAULT_API_URLS, ...doc.value };
-      console.log("[DB] Loaded API URLs ✅");
+def send_plain(chat_id, text, extra=None):
+    if not text or not text.strip():
+        logger.warning(f"Attempted to send empty plain message to {chat_id}")
+        return None
+    if extra is None:
+        extra = {}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+        **extra
     }
-    const cfgDoc = await dataCol.findOne({ key: "api_response_config" });
-    if (cfgDoc && cfgDoc.value && typeof cfgDoc.value === "object") {
-      apiResponseConfig = { ...DEFAULT_API_RESPONSE_CONFIG, ...cfgDoc.value };
-      console.log("[DB] Loaded API response config ✅");
-    }
-  } catch (e) { console.error("[DB LOAD API URLS]", e.message); }
-}
+    return tg_request("sendMessage", payload)
 
-function dbSaveUser(from) {
-  if (!usersCol) return;
-  const now = new Date().toISOString();
-  usersCol.updateOne(
-    { user_id: from.id },
+def edit_message_text(chat_id, message_id, text, extra=None):
+    if not text or not text.strip():
+        logger.warning(f"Attempted to edit with empty text")
+        return None
+    if extra is None:
+        extra = {}
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "MarkdownV2",
+        "disable_web_page_preview": True,
+        **extra
+    }
+    return tg_request("editMessageText", payload)
+
+def delete_message(chat_id, message_id):
+    return tg_request("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+
+def answer_callback(callback_id, text="", show_alert=False):
+    return tg_request("answerCallbackQuery", {"callback_query_id": callback_id, "text": text, "show_alert": show_alert})
+
+def get_chat_member(chat_id, user_id):
+    return tg_request("getChatMember", {"chat_id": chat_id, "user_id": user_id})
+
+def set_my_commands(commands):
+    return tg_request("setMyCommands", {"commands": commands})
+
+def get_updates(offset=None, timeout=30):
+    payload = {"timeout": timeout, "allowed_updates": ["message", "edited_message", "callback_query"]}
+    if offset:
+        payload["offset"] = offset
+    return tg_request("getUpdates", payload, timeout=35)
+
+def delete_webhook():
+    return tg_request("deleteWebhook")
+
+# ── Join Check ──────────────────────────────
+join_cache = {}
+JOIN_CACHE_TTL = 60
+
+def get_not_joined_channels(user_id):
+    missing = []
+    for ch in CHANNELS:
+        try:
+            m = get_chat_member(f"@{ch['username']}", user_id)
+            if not m or m.get("status") not in JOINED_STATUSES:
+                missing.append(ch)
+        except:
+            missing.append(ch)
+    return missing
+
+def check_join(user_id):
+    now = time.time()
+    cached = join_cache.get(user_id)
+    if cached and now - cached["ts"] < JOIN_CACHE_TTL:
+        return cached["ok"]
+    missing = get_not_joined_channels(user_id)
+    ok = len(missing) == 0
+    join_cache[user_id] = {"ok": ok, "ts": now}
+    if len(join_cache) > 5000:
+        for k, v in list(join_cache.items()):
+            if now - v["ts"] > JOIN_CACHE_TTL:
+                del join_cache[k]
+    return ok
+
+def is_admin(username):
+    return f"@{username.lower()}" in [a.lower() for a in admins] if username else False
+
+def send_join_prompt(chat_id):
+    missing = get_not_joined_channels(chat_id)
+    if not missing:
+        return False
+    buttons = []
+    for ch in missing:
+        buttons.append([{"text": f"➕ {ch['name']}", "url": f"https://t.me/{ch['username']}"}])
+    buttons.append([{"text": "✅ VERIFY JOIN", "callback_data": "verify"}])
+    text = ("╔════════════════════════╗\n"
+            "║  🔒  ACCESS LOCKED  🔒  ║\n"
+            "╠════════════════════════╣\n"
+            "📢  Sabhi channels JOIN karo\n"
+            "⚡  Phir ✅ VERIFY dabao\n"
+            "╚════════════════════════╝")
+    send_plain(chat_id, text, extra={"reply_markup": {"inline_keyboard": buttons}})
+    return True
+
+# ── Menus ────────────────────────────────────
+MAIN_MENU_TEXT = (
+    "╔══════════════════════════╗\n"
+    "║  ⚡️  R T F   B O T  ⚡️   ║\n"
+    "╠══════════════════════════╣\n"
+    "🛡  Status  : ONLINE\n"
+    f"👑  Owner   : {OWNER}\n"
+    "🔥  Version : v3.0\n"
+    "╠══════════════════════════╣\n"
+    "📌  Neeche se option chuno:\n"
+    "╚══════════════════════════╝"
+)
+
+HELP_TEXT = (
+    "╔══════════════════════════╗\n"
+    "║  📖  B O T   H E L P    ║\n"
+    "╠══════════════════════════╣\n"
+    "📞  /num <number>\n   Example: /num 9876543210\n\n"
+    "🔎  /tg <username ya userid>\n   Example: /tg rtfgamming\n   Example: /tg 8518042438\n\n"
+    "🪪  /adhar <aadhaar_no>\n   Example: /adhar 598229659586\n\n"
+    "💳  /upi <upi_id>\n   Example: /upi 70497398@axl\n\n"
+    "🚗  /vehicle <reg_number>\n   Example: /vehicle MH02FZ0555\n\n"
+    "🏠 /start  ❓ /help\n"
+    "╠══════════════════════════╣\n"
+    f"👑  Owner : {OWNER}\n"
+    "╚════════════════════════╝"
+)
+
+def main_menu_kb():
+    return {"inline_keyboard": [
+        [{"text": "📞 Number Lookup", "callback_data": "menu_number"}, {"text": "🔎 TG Lookup", "callback_data": "menu_tg"}],
+        [{"text": "🪪 Aadhaar Lookup", "callback_data": "menu_adhar"}],
+        [{"text": "💳 UPI Lookup", "callback_data": "menu_upi"}],
+        [{"text": "🚗 Vehicle Lookup", "callback_data": "menu_vehicle"}],
+        [{"text": "❓ Help", "callback_data": "menu_help"}, {"text": "👑 Owner", "callback_data": "menu_owner"}],
+    ]}
+
+def admin_menu_kb():
+    return {"inline_keyboard": [
+        [{"text": "📞 Number Lookup", "callback_data": "menu_number"}, {"text": "🔎 TG Lookup", "callback_data": "menu_tg"}],
+        [{"text": "🪪 Aadhaar Lookup", "callback_data": "menu_adhar"}],
+        [{"text": "💳 UPI Lookup", "callback_data": "menu_upi"}],
+        [{"text": "🚗 Vehicle Lookup", "callback_data": "menu_vehicle"}],
+        [{"text": "❓ Help", "callback_data": "menu_help"}, {"text": "👑 Owner", "callback_data": "menu_owner"}],
+        [{"text": "📢 Broadcast", "callback_data": "menu_broadcast"}, {"text": "👥 Users Count", "callback_data": "menu_users"}],
+        [{"text": "📋 Admin List", "callback_data": "menu_adminlist"}, {"text": "⚙️ Admin Panel", "callback_data": "menu_adminpanel"}],
+        [{"text": "✏️ Set Custom TG", "callback_data": "menu_setcustomtg"}],
+        [{"text": "✏️ Set Custom Num", "callback_data": "menu_setcustomnum"}],
+        [{"text": "🗄️ DB Backup", "callback_data": "menu_dbbackup"}],
+        [{"text": "🔌 API Manager", "callback_data": "menu_api"}],
+    ]}
+
+# ── API Manager ──────────────────────────────
+def api_manager_kb():
+    rows = []
+    for k in API_KEYS:
+        api = api_toggle[k]
+        st = "🟢 ON" if api["enabled"] else "🔴 OFF"
+        rows.append([
+            {"text": f"{st}  {api['label']}", "callback_data": f"api_tog_{k}"},
+            {"text": "✏️ Msg", "callback_data": f"api_msg_{k}"}
+        ])
+    rows.append([{"text": "🔙 Back", "callback_data": "menu_adminpanel"}])
+    return {"inline_keyboard": rows}
+
+def api_manager_text():
+    text = "╔══════════════════════════╗\n║  🔌  API MANAGER          ║\n╠══════════════════════════╣\n\n"
+    for k in API_KEYS:
+        api = api_toggle[k]
+        st = "🟢 ON " if api["enabled"] else "🔴 OFF"
+        text += f"{st}  {api['label']}\n"
+        if not api["enabled"]:
+            text += f'      💬 "{api["offMsg"][:40]}..."\n'
+        text += "\n"
+    text += "Toggle = ON/OFF\n✏️ Msg = Custom message set karo\n╚══════════════════════════╝"
+    return text
+
+# ── Helper functions ─────────────────────────
+def send_data_not_found(chat_id, user_msg_id, not_found_text):
+    extra = {"reply_to_message_id": user_msg_id} if user_msg_id else {}
+    msg = send_plain(chat_id, not_found_text, extra)
+    if msg:
+        def del_msgs():
+            time.sleep(15)
+            if msg:
+                delete_message(chat_id, msg["message_id"])
+            if user_msg_id:
+                delete_message(chat_id, user_msg_id)
+        threading.Thread(target=del_msgs, daemon=True).start()
+
+def send_data_found(chat_id, user_msg_id, text):
+    extra = {"reply_to_message_id": user_msg_id} if user_msg_id else {}
+    res = send_message(chat_id, text, extra)
+    if not res:
+        plain = re.sub(r"[_*[\]()~`>#+=|{}.!\\-]", "", text)
+        send_plain(chat_id, plain, extra)
+    return res
+
+def api_fetch(url, timeout=15):
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except:
+            return resp.text
+    except Exception as e:
+        logger.error(f"API fetch error {url}: {e}")
+        return None
+
+# ── Record extraction and formatting ────────
+def extract_records(data):
+    records = []
+    try:
+        results = data.get("result", []) if isinstance(data, dict) and not isinstance(data, list) else data
+        if isinstance(results, list):
+            for r in results:
+                records.append({
+                    "name": r.get("name", "N/A").strip(),
+                    "fname": r.get("fname", "N/A").strip(),
+                    "address": r.get("address", "N/A").strip(),
+                    "circle": r.get("circle", "N/A").strip(),
+                    "alt": str(r.get("alt", "N/A")),
+                    "aadhar": str(r.get("aadhar", "N/A")),
+                    "email": r.get("email", "N/A"),
+                })
+    except Exception as e:
+        logger.error(f"extract_records error: {e}")
+    return records
+
+def format_num_result(records, number):
+    colors = ["🔴", "🟠", "🟡", "🟢", "🔵"]
+    out = (f"┌─────────────────────────┐\n"
+           f"│  📞  NUMBER INFO         │\n"
+           f"├─────────────────────────┤\n"
+           f"📱  Number  : `{esc_md(number)}`\n"
+           f"📊  Records : {min(len(records), 5)} found\n\n")
+    for i, r in enumerate(records[:5]):
+        dot = colors[i % len(colors)]
+        out += (f"{dot}━━━ RECORD {i+1} ━━━{dot}\n"
+                f"{cb_md('👤 Name   ', r['name'])}\n"
+                f"{cb_md('👨 Father ', r['fname'])}\n"
+                f"{cb_md('📍 Address', r['address'])}\n"
+                f"{cb_md('📡 Circle ', r['circle'])}\n"
+                f"{cb_md('☎️  Alt Num', r['alt'])}\n"
+                f"{cb_md('🪪 Aadhar ', r['aadhar'])}\n"
+                f"{cb_md('✉️  Email  ', r['email'])}\n\n")
+    out += f"└─────────────────────────┘\n👑  {esc_md(OWNER)}  \\|  ⚡ ACTIVE"
+    return out
+
+# ─── UPDATED DEEP API PARSER ────────────────
+def parse_deep_api_response(api_data):
+    """
+    Parses the new deep API response format (l34k-osint.onrender.com):
     {
-      $set: { user_id: from.id, username: from.username||"", name: [from.first_name, from.last_name].filter(Boolean).join(" "), first_name: from.first_name||"", last_name: from.last_name||"", last_seen: now },
-      $setOnInsert: { first_seen: now, total_searches: 0 }
-    },
-    { upsert: true }
-  ).catch(e => console.error("[DB SAVE USER]", e.message));
-}
-
-function dbIncrSearch(userId) {
-  if (!usersCol) return;
-  usersCol.updateOne({ user_id: userId }, { $inc: { total_searches: 1 } })
-    .catch(e => console.error("[DB INCR SEARCH]", e.message));
-}
-
-async function dbSaveData(key, value) {
-  if (!dataCol) return;
-  dataCol.updateOne({ key }, { $set: { key, value, updated_at: new Date().toISOString() } }, { upsert: true })
-    .catch(e => console.error("[DB SAVE DATA]", e.message));
-}
-
-async function dbGetAllUsers() {
-  if (!usersCol) return [];
-  try { return await usersCol.find({}, { projection: { _id: 0 } }).toArray(); }
-  catch (e) { console.error("[DB GET USERS]", e.message); return []; }
-}
-
-async function dbUserCount() {
-  if (!usersCol) return 0;
-  try { return await usersCol.countDocuments(); } catch { return 0; }
-}
-
-// ── TELEGRAM API ─────────────────────────────
-const TG_BASE    = `https://api.telegram.org/bot${BOT_TOKEN}`;
-const httpAgent  = new http.Agent ({ keepAlive: true, maxSockets: 200 });
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 200 });
-function agentForTelegram(url) { return url.startsWith("https") ? { agent: httpsAgent } : { agent: httpAgent }; }
-
-const httpsAgentExternal = new https.Agent({ keepAlive: false, timeout: 60000 });
-const httpAgentExternal  = new http.Agent ({ keepAlive: false, timeout: 60000 });
-function agentForExternal(url) { return url.startsWith("https") ? { agent: httpsAgentExternal } : { agent: httpAgentExternal }; }
-
-async function tgApi(method, body = {}) {
-  try {
-    const res  = await fetch(`${TG_BASE}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000), ...agentForTelegram(TG_BASE) });
-    const json = await res.json();
-    if (!json.ok) { console.error(`[TG ${method}]`, json.description); return null; }
-    return json.result;
-  } catch (e) { console.error(`[TG ${method}]`, e.message); return null; }
-}
-
-function escMd(text) {
-  if (text == null) return "";
-  return String(text).replace(/[_*[\]()~`>#+=|{}.!\\\-]/g, "\\$&");
-}
-function cbMd(label, value) {
-  const v = (value != null ? String(value).trim() : "");
-  if (v && !["N/A","","None","null","nan","undefined","Not Available"].includes(v))
-    return `${escMd(label)}: \`${escMd(v)}\``;
-  return `${escMd(label)}: ❌ N/A`;
-}
-
-const sendMessage     = (chat_id, text, extra = {}) => tgApi("sendMessage",     { chat_id, text, parse_mode: "MarkdownV2", disable_web_page_preview: true, ...extra });
-const deleteMessage   = (chat_id, message_id) => tgApi("deleteMessage", { chat_id, message_id });
-const answerCallback  = (callback_query_id, text = "", show_alert = false) => tgApi("answerCallbackQuery", { callback_query_id, text, show_alert });
-const getChatMember   = (chat_id, user_id) => tgApi("getChatMember", { chat_id, user_id });
-const setMyCommands   = (commands) => tgApi("setMyCommands", { commands });
-const setWebhook      = (url)      => tgApi("setWebhook",    { url, drop_pending_updates: true });
-const sendPlain = (chat_id, text, extra = {}) => tgApi("sendMessage", { chat_id, text, disable_web_page_preview: true, ...extra });
-
-async function sendDataNotFound(chatId, userMsgId, notFoundText) {
-  const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
-  const notFoundMsg = await sendPlain(chatId, notFoundText, extra);
-  setTimeout(() => {
-    if (notFoundMsg) deleteMessage(chatId, notFoundMsg.message_id);
-    if (userMsgId)   deleteMessage(chatId, userMsgId);
-  }, 15000);
-}
-
-async function sendDataFound(chatId, userMsgId, text) {
-  const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
-  const res = await sendMessage(chatId, text, extra);
-  if (!res) {
-    const plain = text.replace(/[_*[\]()~`>#+=|{}.!\\\-]/g, "");
-    await sendPlain(chatId, plain, extra);
-  }
-  return res;
-}
-
-// ── JOIN CHECK ────────────────────────────────
-const joinCache = new Map();
-const JOIN_CACHE_TTL = 60_000;
-
-function resolveChannelId(ch) {
-  if (ch.id) return ch.id;
-  if (ch.username) return `@${ch.username}`;
-  return null;
-}
-
-async function getNotJoinedChannels(userId) {
-  const missing = [];
-  for (const ch of CHANNELS) {
-    const cid = resolveChannelId(ch);
-    if (!cid) continue;
-    try {
-      const m = await getChatMember(cid, userId);
-      if (!m || !JOINED_STATUSES.has(m.status)) missing.push(ch);
-    } catch { missing.push(ch); }
-  }
-  return missing;
-}
-
-async function checkJoin(userId) {
-  const cached = joinCache.get(userId);
-  if (cached && Date.now() - cached.ts < JOIN_CACHE_TTL) return cached.ok;
-  const missing = await getNotJoinedChannels(userId);
-  const ok = missing.length === 0;
-  joinCache.set(userId, { ok, ts: Date.now() });
-  if (joinCache.size > 5000) { const c = Date.now() - JOIN_CACHE_TTL; for (const [k,v] of joinCache) { if (v.ts < c) joinCache.delete(k); } }
-  return ok;
-}
-
-function isAdmin(username) {
-  return admins.map(a => a.toLowerCase()).includes(`@${(username||"").toLowerCase()}`);
-}
-
-async function sendJoinPrompt(chatId) {
-  const missing = await getNotJoinedChannels(chatId);
-  if (!missing.length) return false;
-  const buttons = missing.map(ch => {
-    const url = ch.invite_link ? ch.invite_link : ch.username ? `https://t.me/${ch.username}` : null;
-    if (!url) return null;
-    return [{ text: `➕ ${ch.name}`, url }];
-  }).filter(Boolean);
-  buttons.push([{ text: "✅ VERIFY JOIN", callback_data: "verify" }]);
-  await sendPlain(chatId, "╔════════════════════════╗\n║  🔒  ACCESS LOCKED  🔒  ║\n╠════════════════════════╣\n📢  Sabhi channels JOIN karo\n⚡  Phir ✅ VERIFY dabao\n╚════════════════════════╝", { reply_markup: { inline_keyboard: buttons } });
-  return true;
-}
-
-// ── MENUS ─────────────────────────────────────
-const MAIN_MENU_TEXT =
-  "╔══════════════════════════╗\n║  ⚡️  R T F   B O T  ⚡️   ║\n╠══════════════════════════╣\n" +
-  "🛡  Status  : ONLINE\n👑  Owner   : @RTFGAMMING\n🔥  Version : v3.2\n" +
-  "╠══════════════════════════╣\n📌  Neeche se option chuno:\n╚══════════════════════════╝";
-
-const HELP_TEXT =
-  "╔══════════════════════════╗\n║  📖  B O T   H E L P    ║\n╠══════════════════════════╣\n" +
-  "📞  /num <number>\n   Example: /num 9876543210\n\n" +
-  "🔎  /tg <username ya userid>\n   Example: /tg rtfgamming\n   Example: /tg 8518042438\n\n" +
-  "🪪  /adhar <aadhaar_no>\n   Example: /adhar 598229659586\n\n" +
-  "💳  /upi <upi_id>\n   Example: /upi 70497398@axl\n\n" +
-  "🚗  /vehicle <reg_number>\n   Example: /vehicle MH02FZ0555\n\n" +
-  "🏠 /start  ❓ /help\n╠══════════════════════════╣\n👑  Owner : @RTFGAMMING\n╚══════════════════════════╝";
-
-function mainMenuKb() {
-  return { inline_keyboard: [
-    [{ text: "📞 Number Lookup", callback_data: "menu_number" }, { text: "🔎 TG Lookup", callback_data: "menu_tg" }],
-    [{ text: "🪪 Aadhaar Lookup", callback_data: "menu_adhar" }],
-    [{ text: "💳 UPI Lookup", callback_data: "menu_upi" }],
-    [{ text: "🚗 Vehicle Lookup", callback_data: "menu_vehicle" }],
-    [{ text: "❓ Help", callback_data: "menu_help" }, { text: "👑 Owner", callback_data: "menu_owner" }],
-  ]};
-}
-
-function adminMenuKb() {
-  return { inline_keyboard: [
-    [{ text: "📞 Number Lookup", callback_data: "menu_number" }, { text: "🔎 TG Lookup", callback_data: "menu_tg" }],
-    [{ text: "🪪 Aadhaar Lookup", callback_data: "menu_adhar" }],
-    [{ text: "💳 UPI Lookup", callback_data: "menu_upi" }],
-    [{ text: "🚗 Vehicle Lookup", callback_data: "menu_vehicle" }],
-    [{ text: "❓ Help", callback_data: "menu_help" }, { text: "👑 Owner", callback_data: "menu_owner" }],
-    [{ text: "📢 Broadcast", callback_data: "menu_broadcast" }, { text: "👥 Users Count", callback_data: "menu_users" }],
-    [{ text: "📋 Admin List", callback_data: "menu_adminlist" }, { text: "⚙️ Admin Panel", callback_data: "menu_adminpanel" }],
-    [{ text: "✏️ Set Custom TG", callback_data: "menu_setcustomtg" }],
-    [{ text: "✏️ Set Custom Num", callback_data: "menu_setcustomnum" }],
-    [{ text: "🗄️ DB Backup", callback_data: "menu_dbbackup" }],
-    [{ text: "🔌 API Manager", callback_data: "menu_api" }],
-    [{ text: "🔗 API URL Manager", callback_data: "menu_apiurl" }],
-    [{ text: "📢 Channel Manager", callback_data: "menu_channels" }],
-  ]};
-}
-
-// ══════════════════════════════════════════════
-//  API URL MANAGER — TEXT + KEYBOARD
-// ══════════════════════════════════════════════
-
-function apiUrlManagerText() {
-  let text = "🔗 *API URL MANAGER*\n";
-  text += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
-  for (const k of API_KEYS) {
-    const url = apiUrls[k] || DEFAULT_API_URLS[k];
-    const isDefault = url === DEFAULT_API_URLS[k];
-    const cfg = apiResponseConfig[k] || "raw";
-    const cfgLabel = cfg === "raw" ? "🟢 Default Format" : `🔵 Custom Field: \`${escMd(cfg.replace("field:", ""))}\``;
-    text += `*${escMd(API_LABELS[k])}*\n`;
-    text += `Status: ${isDefault ? "🟢 Default URL" : "🔵 Custom URL"}\n`;
-    text += `Response: ${cfgLabel}\n`;
-    const shortUrl = url.length > 50 ? url.slice(0, 50) + "..." : url;
-    text += `URL: \`${escMd(shortUrl)}\`\n\n`;
-  }
-  text += "_✏️ = URL change  |  🔄 = Default reset_";
-  return text;
-}
-
-function apiUrlManagerKb() {
-  const rows = API_KEYS.map(k => [
-    { text: `✏️ ${API_LABELS[k]}`, callback_data: `apiurl_edit_${k}` },
-    { text: "🔄 Reset", callback_data: `apiurl_reset_${k}` },
-  ]);
-  rows.push([{ text: "🔙 Back", callback_data: "menu_adminpanel" }]);
-  return { inline_keyboard: rows };
-}
-
-// ══════════════════════════════════════════════
-//  CHANNEL MANAGER
-// ══════════════════════════════════════════════
-
-function channelManagerText() {
-  let text = "╔══════════════════════════╗\n║  📢  CHANNEL MANAGER     ║\n╠══════════════════════════╣\n\n";
-  if (!CHANNELS.length) {
-    text += "❌  Koi channel nahi hai abhi.\n\n";
-  } else {
-    CHANNELS.forEach((ch, i) => {
-      const type = ch.username ? "🌐 Public" : "🔒 Private";
-      const ref  = ch.username ? `@${ch.username}` : `ID: ${ch.id}`;
-      text += `${i + 1}\\. ${escMd(ch.name)}\n`;
-      text += `   ${type} \\| ${escMd(ref)}\n`;
-      if (ch.invite_link) text += `   🔗 Invite link set ✅\n`;
-      text += "\n";
-    });
-  }
-  text += "🗑️ = Remove  \\|  ➕ = Naya Add\n╚══════════════════════════╝";
-  return text;
-}
-
-function channelManagerKb() {
-  const rows = CHANNELS.map((ch, i) => {
-    const label = ch.username ? `@${ch.username}` : `ID:${ch.id}`;
-    return [{ text: `🗑️ Remove — ${ch.name} (${label})`, callback_data: `ch_del_${i}` }];
-  });
-  rows.push([{ text: "➕ Channel Add Karo", callback_data: "ch_add" }]);
-  rows.push([{ text: "🔙 Back", callback_data: "menu_adminpanel" }]);
-  return { inline_keyboard: rows };
-}
-
-// ── API MANAGER ───────────────────────────────
-function apiManagerKb() {
-  const rows = API_KEYS.map(k => {
-    const api = apiToggle[k];
-    const st  = api.enabled ? "🟢 ON" : "🔴 OFF";
-    return [
-      { text: `${st}  ${api.label}`, callback_data: `api_tog_${k}` },
-      { text: "✏️ Msg", callback_data: `api_msg_${k}` },
-    ];
-  });
-  rows.push([{ text: "🔙 Back", callback_data: "menu_adminpanel" }]);
-  return { inline_keyboard: rows };
-}
-
-function apiManagerText() {
-  let text = "╔══════════════════════════╗\n║  🔌  API MANAGER          ║\n╠══════════════════════════╣\n\n";
-  for (const k of API_KEYS) {
-    const api = apiToggle[k];
-    const st  = api.enabled ? "🟢 ON " : "🔴 OFF";
-    text += `${st}  ${api.label}\n`;
-    if (!api.enabled) text += `      💬 "${api.offMsg.slice(0,40)}..."\n`;
-    text += "\n";
-  }
-  text += "Toggle = ON/OFF  |  ✏️ = Custom off msg\n╚══════════════════════════╝";
-  return text;
-}
-
-// ══════════════════════════════════════════════
-//  FORMAT HELPERS
-// ══════════════════════════════════════════════
-
-function extractRecords(data) {
-  const records = [];
-  try {
-    const results = (data && typeof data === "object" && !Array.isArray(data)) ? (data.result || []) : (data || []);
-    for (const r of (Array.isArray(results) ? results : [])) {
-      records.push({
-        name:    (r.name    || "N/A").trim(),
-        fname:   (r.fname   || "N/A").trim(),
-        address: (r.address || "N/A").trim(),
-        circle:  (r.circle  || "N/A").trim(),
-        alt:     String(r.alt    || "N/A"),
-        aadhar:  String(r.aadhar || "N/A"),
-        email:   (r.email   || "N/A"),
-      });
-    }
-  } catch (e) { console.error("[extractRecords]", e.message); }
-  return records;
-}
-
-function formatNumResult(records, number) {
-  const colors = ["🔴","🟠","🟡","🟢","🔵"];
-  let out =
-    `┌─────────────────────────┐\n│  📞  NUMBER INFO         │\n├─────────────────────────┤\n` +
-    `📱  Number  : \`${escMd(number)}\`\n📊  Records : ${Math.min(records.length,5)} found\n\n`;
-  records.slice(0,5).forEach((r,i) => {
-    const dot = colors[i % colors.length];
-    out +=
-      `${dot}━━━ RECORD ${i+1} ━━━${dot}\n` +
-      `${cbMd("👤 Name   ",r.name)}\n${cbMd("👨 Father ",r.fname)}\n` +
-      `${cbMd("📍 Address",r.address)}\n${cbMd("📡 Circle ",r.circle)}\n` +
-      `${cbMd("☎️  Alt Num",r.alt)}\n${cbMd("🪪 Aadhar ",r.aadhar)}\n` +
-      `${cbMd("✉️  Email  ",r.email)}\n\n`;
-  });
-  out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
-  return out;
-}
-
-function parseDeepApiResponse(data) {
-  try {
-    let arr = Array.isArray(data) ? data : (data && Array.isArray(data.result) ? data.result : null);
-    if (!arr || !arr.length) return null;
-    const records = [];
-    for (const item of arr) {
-      if (item.req_left !== undefined || item.developer !== undefined) continue;
-      if (!item.NAME && !item.MOBILE) continue;
-      records.push({
-        name:    String(item.NAME    || "").trim(),
-        fname:   String(item.fname   || "").trim(),
-        address: String(item.ADDRESS || "").trim(),
-        circle:  String(item.circle  || "").trim(),
-        mobile:  String(item.MOBILE  || "").trim(),
-        alt:     String(item.alt     || "").trim(),
-        id:      String(item.id      || "").trim(),
-      });
-    }
-    return records.length ? records : null;
-  } catch (e) { console.error("[parseDeepApiResponse]", e.message); return null; }
-}
-
-function formatDeepResult(records, queryNumber) {
-  if (!records || !records.length) return null;
-  const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
-  let text =
-    `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-    `│  🕵️  D E E P   I N T E L   │\n` +
-    `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-    `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
-  records.forEach((rec, i) => {
-    const dot = colors[i % colors.length];
-    text += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
-    if (rec.name)    text += `${cbMd("👤 Name   ", rec.name)}\n`;
-    if (rec.fname)   text += `${cbMd("👨 Father ", rec.fname)}\n`;
-    if (rec.mobile)  text += `${cbMd("📞 Mobile ", rec.mobile)}\n`;
-    if (rec.alt)     text += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
-    if (rec.address) text += `${cbMd("📍 Address", rec.address)}\n`;
-    if (rec.circle)  text += `${cbMd("📡 Circle ", rec.circle)}\n`;
-    if (rec.id)      text += `${cbMd("🪪 Aadhar ", rec.id)}\n`;
-    text += "\n";
-  });
-  text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
-  return text;
-}
-
-function formatAdharResult(data, adharNumber) {
-  try {
-    if (!data || !data.success || !Array.isArray(data.results) || !data.results.length) return null;
-    const result  = data.results[0];
-    const rc      = result.ration_card_details || {};
-    const addInfo = result.additional_info     || {};
-    const members = result.members             || [];
-    let out =
-      `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
-      `🔢  Aadhaar : \`${escMd(adharNumber)}\`\n\n`;
-    if (Object.keys(rc).length) {
-      out += `📋━━━ RATION CARD ━━━📋\n`;
-      if (rc.ration_card_no) out += `${cbMd("🆔 RC Number  ", rc.ration_card_no)}\n`;
-      if (rc.scheme_name)    out += `${cbMd("📋 Scheme     ", rc.scheme_name)}\n`;
-      if (rc.state_name)     out += `${cbMd("🗺️  State      ", rc.state_name)}\n`;
-      if (rc.district_name)  out += `${cbMd("📍 District   ", rc.district_name)}\n`;
-      out += "\n";
-    }
-    const impds   = addInfo.impds_transaction_allowed;
-    const central = addInfo.exists_in_central_repository;
-    const fpsType = addInfo.fps_category;
-    if (impds !== undefined || central !== undefined || fpsType) {
-      out += `ℹ️━━━ ADDITIONAL INFO ━━━ℹ️\n`;
-      if (central  !== undefined) out += `🏛️  Central Repo   : ${central  ? "✅ YES" : "❌ NO"}\n`;
-      if (impds    !== undefined) out += `💸 IMPDS Allowed  : ${impds    ? "✅ YES" : "❌ NO"}\n`;
-      if (fpsType)                out += `🏪 FPS Category   : \`${escMd(fpsType)}\`\n`;
-      out += "\n";
-    }
-    if (members.length) {
-      out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
-      const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"];
-      members.forEach((m, i) => {
-        const dot = colors[i % colors.length];
-        out +=
-          `${dot}━━ ${escMd(m.s_no || String(i+1))}\\. ${escMd(m.member_name || "N/A")}\n` +
-          `   🆔 Member ID : \`${escMd(m.member_id || "N/A")}\`\n`;
-        if (m.remark && m.remark.trim()) out += `   📝 Remark    : ${escMd(m.remark)}\n`;
-        out += "\n";
-      });
-    }
-    out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
-    return out;
-  } catch (e) { console.error("[formatAdhar]", e.message); return null; }
-}
-
-function formatUpiResult(data, upiId) {
-  const val = v => { const s = String(v||"").trim(); return s && !["None","null","nan","false","False",""].includes(s) ? s : null; };
-  const tick = v => v ? "✅" : "❌";
-  const name = val(data.name); const username = val(data.username); const valid = data.valid;
-  const accType = val(data.account_type); const isMerchant = data.merchant; const merchantVer = data.merchant_verified;
-  const bank = val(data.bank); const bankType = val(data.bank_type); const ifsc = val(data.ifsc);
-  const ifscD = data.ifsc_details || {};
-  const branch = val(ifscD.BRANCH); const address = val(ifscD.ADDRESS); const city = val(ifscD.CITY);
-  const district = val(ifscD.DISTRICT); const state = val(ifscD.STATE); const contact = val(ifscD.CONTACT);
-  const rtgs = ifscD.RTGS; const neft = ifscD.NEFT; const imps = ifscD.IMPS; const upiSup = ifscD.UPI;
-  let lines = ["┌─────────────────────────┐","│  💳  UPI LOOKUP          │","├─────────────────────────┤", cbMd("💳 UPI ID      ",upiId)];
-  if (name)     lines.push(cbMd("👤 Name        ",name));
-  if (username) lines.push(cbMd("🔖 Username    ",username));
-  lines.push(`✅ Valid        : ${valid ? "✅ YES" : "❌ NO"}`);
-  if (accType)  lines.push(cbMd("🏦 Account Type",accType));
-  if (bank)     lines.push(cbMd("🏛️  Bank        ",bank));
-  if (bankType) lines.push(cbMd("📂 Bank Type   ",bankType));
-  if (ifsc)     lines.push(cbMd("🔢 IFSC        ",ifsc));
-  if (isMerchant  != null) lines.push(`🏪 Merchant    : ${tick(isMerchant)}`);
-  if (merchantVer != null) lines.push(`✔️  Merch\\.Verif : ${tick(merchantVer)}`);
-  if ([branch,address,city,district,state,contact].some(Boolean)) {
-    lines.push("├─────────────────────────┤","│  🏦  IFSC DETAILS        │","├─────────────────────────┤");
-    if (branch)   lines.push(cbMd("🏢 Branch      ",branch));
-    if (address)  lines.push(cbMd("📍 Address     ",address));
-    if (city)     lines.push(cbMd("🏙️  City        ",city));
-    if (district) lines.push(cbMd("📍 District    ",district));
-    if (state)    lines.push(cbMd("🗺️  State       ",state));
-    if (contact)  lines.push(cbMd("📞 Contact     ",contact));
-  }
-  if ([rtgs,neft,imps,upiSup].some(v => v != null)) {
-    lines.push("├─────────────────────────┤","│  💸  PAYMENT MODES       │","├─────────────────────────┤");
-    if (rtgs   != null) lines.push(`⚡ RTGS        : ${tick(rtgs)}`);
-    if (neft   != null) lines.push(`🔄 NEFT        : ${tick(neft)}`);
-    if (imps   != null) lines.push(`📲 IMPS        : ${tick(imps)}`);
-    if (upiSup != null) lines.push(`💳 UPI         : ${tick(upiSup)}`);
-  }
-  lines.push("└─────────────────────────┘", `👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`);
-  return lines.join("\n");
-}
-
-function formatVehicleResult(data) {
-  const v = val => {
-    const s = String(val||"").trim();
-    return s && !["None","null","","nan","0","false","False","Not Available","undefined"].includes(s) ? s : null;
-  };
-  const tick = val => val ? "✅" : "❌";
-  const vd         = (typeof data.vehicle_data === "object" && data.vehicle_data) || {};
-  const rtoData    = (typeof vd.rtoData === "object" && vd.rtoData) || {};
-  const regNo      = v(data.vehicle_number) || v(vd.regNo);
-  const engNum     = v(data.engine_number)  || v(vd.engine);
-  const chassisNum = v(data.chassis_number) || v(vd.chassis);
-  const mobile     = v(data.mobile_number);
-  const last5      = v(data.last_5_chassis);
-  const rtoName    = v(rtoData.rtoName);
-  const rtoCode    = v(rtoData.rtoCode) || v(vd.rtoCode);
-  const stateName  = v(rtoData.statename);
-  const regAuth    = v(vd.regAuthority);
-  const regDate    = v(vd.regDate);
-  const owner      = v(vd.owner);
-  const fatherName = v(vd.ownerFatherName);
-  const pincode    = v(vd.pincode);
-  const address    = v(vd.presentAddress) || v(vd.permAddress);
-  const mfr        = v(vd.manufacturer);
-  const model      = v(vd.vehicle);
-  const variant    = v(vd.variant);
-  const fuelType   = v(vd.fuelType);
-  const vehClass   = v(vd.vehicleClass);
-  const vehType    = v(vd.vehicleType);
-  const mfrYear    = v(vd.manufacturerYear);
-  const cc         = v(vd.cubicCapacity);
-  const seats      = v(vd.seatCapacity);
-  const isComm     = vd.isCommercial;
-  const financer   = v(vd.financerName);
-  const insComp    = v(vd.insuranceCompanyName);
-  const insPolicy  = v(vd.insurancePolicyNumber);
-  const insUpto    = v(vd.insuranceUpto);
-  const insExpired = vd.insuranceExpired;
-  const puccValid  = v(vd.puccValidUpto);
-  const puccNo     = v(vd.puccNumber);
-  const vehicleAge = v(vd.vehicleAge);
-  const status     = v(vd.statusDesc) || v(vd.status);
-  const transKey   = v(vd.transKey);
-  const eDate      = v(vd.eDate);
-  const lmDate     = v(vd.lmDate);
-  const lines = ["┌────────────────────────────┐","│  🚗  VEHICLE INFO           │","└────────────────────────────┘","🔷━━━ REGISTRATION ━━━🔷"];
-  if (regNo)   lines.push(`🚘  Reg No       : \`${escMd(regNo)}\``);
-  if (regAuth) lines.push(`🏛️   Reg Auth     : \`${escMd(regAuth)}\``);
-  if (regDate) lines.push(`📅  Reg Date     : \`${escMd(regDate)}\``);
-  if (rtoCode) lines.push(`🗂️   RTO Code     : \`${escMd(rtoCode)}\``);
-  if (rtoName) lines.push(`🏢  RTO Name     : \`${escMd(rtoName)}\``);
-  if (stateName) lines.push(`🗺️   State        : \`${escMd(stateName)}\``);
-  if ([owner, fatherName, mobile, address, pincode].some(Boolean)) {
-    lines.push("\n🔶━━━ OWNER DETAILS ━━━🔶");
-    if (owner)      lines.push(`👤  Owner        : \`${escMd(owner)}\``);
-    if (fatherName) lines.push(`👨  Father       : \`${escMd(fatherName)}\``);
-    if (mobile)     lines.push(`📞  Mobile       : \`${escMd(mobile)}\``);
-    if (address)    lines.push(`📍  Address      : \`${escMd(address)}\``);
-    if (pincode)    lines.push(`📮  Pincode      : \`${escMd(pincode)}\``);
-  }
-  if ([mfr, model, variant, fuelType, vehClass, cc, seats, mfrYear, vehicleAge].some(Boolean)) {
-    lines.push("\n🟢━━━ VEHICLE SPECS ━━━🟢");
-    if (mfr)      lines.push(`🏭  Manufacturer : \`${escMd(mfr)}\``);
-    if (model)    lines.push(`🚗  Model        : \`${escMd(model)}\``);
-    if (variant)  lines.push(`⚙️   Variant      : \`${escMd(variant)}\``);
-    if (fuelType) lines.push(`⛽  Fuel Type    : \`${escMd(fuelType)}\``);
-    if (vehClass) lines.push(`📋  Class        : \`${escMd(vehClass)}\``);
-    if (vehType)  lines.push(`🔖  Type         : \`${escMd(vehType)}\``);
-    if (mfrYear)  lines.push(`📆  Mfr Year     : \`${escMd(mfrYear)}\``);
-    if (vehicleAge) lines.push(`⏳  Vehicle Age  : \`${escMd(vehicleAge)}\``);
-    if (cc)       lines.push(`🔩  Cubic Cap    : \`${escMd(cc)} cc\``);
-    if (seats)    lines.push(`💺  Seats        : \`${escMd(String(seats))}\``);
-    if (isComm != null) lines.push(`🏪  Commercial   : ${tick(isComm)}`);
-  }
-  if ([engNum, chassisNum, last5].some(Boolean)) {
-    lines.push("\n🔵━━━ TECHNICAL ━━━🔵");
-    if (engNum)     lines.push(`🔧  Engine No    : \`${escMd(engNum)}\``);
-    if (chassisNum) lines.push(`🔩  Chassis No   : \`${escMd(chassisNum)}\``);
-    if (last5)      lines.push(`🔢  Last 5 Chass : \`${escMd(last5)}\``);
-  }
-  if ([financer, insComp, insPolicy, insUpto, puccValid, puccNo].some(Boolean)) {
-    lines.push("\n🟣━━━ FINANCE & INSURANCE ━━━🟣");
-    if (financer)  lines.push(`💰  Financer     : \`${escMd(financer)}\``);
-    if (insComp)   lines.push(`🛡️   Insurance    : \`${escMd(insComp)}\``);
-    if (insPolicy) lines.push(`📄  Policy No    : \`${escMd(insPolicy)}\``);
-    if (insUpto)   lines.push(`📅  Ins Upto     : \`${escMd(insUpto)}\`${insExpired ? " ❌ EXPIRED" : " ✅ VALID"}`);
-    if (puccValid) lines.push(`🌿  PUCC Valid   : \`${escMd(puccValid)}\``);
-    if (puccNo)    lines.push(`📋  PUCC No      : \`${escMd(puccNo)}\``);
-  }
-  if (status || transKey || eDate || lmDate) {
-    lines.push("\n📌━━━ ADDITIONAL INFO ━━━📌");
-    if (status)    lines.push(`📊  Status       : \`${escMd(status)}\``);
-    if (transKey)  lines.push(`🔑  Trans Key    : \`${escMd(transKey)}\``);
-    if (eDate)     lines.push(`📅  Entry Date   : \`${escMd(eDate)}\``);
-    if (lmDate)    lines.push(`🔄  Last Modified: \`${escMd(lmDate)}\``);
-  }
-  lines.push(`\n┌────────────────────────────┐`,`│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │`,"└────────────────────────────┘");
-  return lines.join("\n");
-}
-
-// ══════════════════════════════════════════════
-//  CUSTOM RESPONSE FORMATTER
-//  apiResponseConfig[key] = "raw" | "field:fieldname"
-// ══════════════════════════════════════════════
-function applyResponseConfig(key, rawData, query) {
-  const cfg = apiResponseConfig[key] || "raw";
-  if (cfg === "raw") return null; // caller uses default formatter
-  if (cfg.startsWith("field:")) {
-    const fieldName = cfg.replace("field:", "");
-    // Try to extract the field from the response
-    let value = null;
-    if (rawData && typeof rawData === "object") {
-      // Support nested dot-notation: "data.name"
-      const parts = fieldName.split(".");
-      let cur = rawData;
-      for (const p of parts) {
-        if (cur && typeof cur === "object") cur = cur[p];
-        else { cur = null; break; }
+      "status": true,
+      "data": {
+        "source1": {
+          "records": [
+            {
+              "FullName": "...",
+              "FatherName": "...",
+              "Phone": "...",
+              "Phone2": "...",
+              "Adres": "...",
+              "Adres2": "...",
+              "Region": "...",
+              ...
+            }
+          ]
+        }
       }
-      if (cur != null) value = String(cur).trim();
-    } else if (typeof rawData === "string") {
-      value = rawData.trim();
     }
-    if (!value || ["null","undefined","None","N/A",""].includes(value)) {
-      return null; // fall back to default formatter
+    Returns the same `parsed` dict used by `format_deep_result`.
+    """
+    try:
+        if not api_data or api_data.get("status") is not True:
+            return None
+        source = api_data.get("data", {}).get("source1", {})
+        records = source.get("records", [])
+        if not isinstance(records, list) or not records:
+            return None
+
+        parsed = {
+            "mobiles": [],
+            "addresses": [],
+            "full_name": None,
+            "father": None,
+            "region": None,
+            "facebook": None,
+            "name": None,
+            "surname": None,
+            "gender": None,
+            "country": None,
+        }
+
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+
+            # Extract phones
+            for key in ["Phone", "Phone2", "Phone3", "Phone4", "Phone5"]:
+                val = rec.get(key)
+                if val and str(val).strip() not in ("", "None", "null"):
+                    phone = str(val).strip()
+                    if phone not in parsed["mobiles"]:
+                        parsed["mobiles"].append(phone)
+
+            # Extract addresses
+            for key in ["Adres", "Adres2", "Adres3"]:
+                val = rec.get(key)
+                if val and str(val).strip() not in ("", "None", "null"):
+                    addr = str(val).strip()
+                    if addr not in parsed["addresses"]:
+                        parsed["addresses"].append(addr)
+
+            # Identity fields
+            if rec.get("FullName") and not parsed["full_name"]:
+                parsed["full_name"] = str(rec["FullName"]).strip()
+            if rec.get("FatherName") and not parsed["father"]:
+                parsed["father"] = str(rec["FatherName"]).strip()
+            if rec.get("Region") and not parsed["region"]:
+                parsed["region"] = str(rec["Region"]).strip()
+            if rec.get("Name") and not parsed["name"]:
+                parsed["name"] = str(rec["Name"]).strip()
+            if rec.get("Surname") and not parsed["surname"]:
+                parsed["surname"] = str(rec["Surname"]).strip()
+            if rec.get("Gender") and not parsed["gender"]:
+                parsed["gender"] = str(rec["Gender"]).strip()
+            if rec.get("Country") and not parsed["country"]:
+                parsed["country"] = str(rec["Country"]).strip()
+            if rec.get("FacebookID") and not parsed["facebook"]:
+                parsed["facebook"] = str(rec["FacebookID"]).strip()
+            if rec.get("Facebook") and not parsed["facebook"]:
+                parsed["facebook"] = str(rec["Facebook"]).strip()
+
+        # If no meaningful data, return None
+        if not any([parsed["mobiles"], parsed["addresses"],
+                    parsed["full_name"], parsed["father"], parsed["region"]]):
+            return None
+        return parsed
+    except Exception as e:
+        logger.error(f"parse_deep_api_response error: {e}")
+        return None
+
+# ── Rest of the formatters (unchanged) ──────
+def format_deep_result(parsed, query_number):
+    if not parsed:
+        return None
+    has_meaningful = any([parsed["mobiles"], parsed["addresses"],
+                          parsed["full_name"], parsed["father"], parsed["region"]])
+    if not has_meaningful:
+        return None
+    text = (f"\n\n"
+            f"🔬━━━━━━━━━━━━━━━━━━━━━🔬\n"
+            f"│  🕵️  D E E P   I N T E L   │\n"
+            f"🔬━━━━━━━━━━━━━━━━━━━━━🔬\n"
+            f"🔢  Query : `{esc_md(query_number)}`\n\n")
+    if any([parsed["full_name"], parsed["name"], parsed["surname"], parsed["father"], parsed["gender"]]):
+        text += "👤━━━ IDENTITY ━━━👤\n"
+        if parsed["full_name"]:
+            text += f"{cb_md('🧑 Full Name  ', parsed['full_name'])}\n"
+        if parsed["name"] or parsed["surname"]:
+            nm = " ".join(filter(None, [parsed["name"], parsed["surname"]]))
+            text += f"{cb_md('🏷️  Name      ', nm)}\n"
+        if parsed["father"]:
+            text += f"{cb_md('👨 Father    ', parsed['father'])}\n"
+        if parsed["gender"]:
+            text += f"{cb_md('⚧️  Gender    ', parsed['gender'])}\n"
+        text += "\n"
+    if parsed["mobiles"]:
+        unique = list(set(parsed["mobiles"]))
+        text += f"📞━━━ PHONES ({len(unique)}) ━━━📞\n"
+        colors = ["🔴","🟠","🟡","🟢","🔵","🟣","🔘","⚪"]
+        for i, mob in enumerate(unique):
+            text += f"{colors[i % len(colors)]}  `{esc_md(mob)}`\n"
+        text += "\n"
+    if parsed["addresses"]:
+        unique = list(set(parsed["addresses"]))
+        text += f"📍━━━ ADDRESSES ({len(unique)}) ━━━📍\n"
+        for addr in unique:
+            text += f"🔸  {esc_md(addr)}\n"
+        text += "\n"
+    if parsed["region"]:
+        text += f"📡━━━ NETWORK ━━━📡\n{cb_md('📶 Region', parsed['region'])}\n\n"
+    if parsed["facebook"] or parsed["country"]:
+        text += "🌐━━━ SOCIAL ━━━🌐\n"
+        if parsed["facebook"]:
+            text += f"{cb_md('📘 Facebook', parsed['facebook'])}\n"
+        if parsed["country"]:
+            text += f"{cb_md('🌍 Country ', parsed['country'])}\n"
+        text += "\n"
+    text += f"👑  {esc_md(OWNER)}  \\|  ⚡ DEEP INTEL"
+    return text
+
+def format_adhar_result(data, adhar_number):
+    try:
+        if not data or not data.get("success"):
+            return None
+        details = data.get("details", {})
+        card = details.get("card_info", {})
+        members = details.get("members", [])
+        monthly = details.get("monthly_summary", [])
+        out = (f"┌─────────────────────────┐\n"
+               f"│  🪪  AADHAAR INTEL       │\n"
+               f"├─────────────────────────┤\n"
+               f"🔢  Aadhaar     : `{esc_md(adhar_number)}`\n"
+               f"{cb_md('🪪  RC ID       ', data.get('ration_card_id'))}\n\n")
+        if card:
+            out += "📋━━━ RATION CARD ━━━📋\n"
+            for key, val in card.items():
+                if val and val != "null":
+                    out += f"{cb_md(key, val)}\n"
+            out += "\n"
+        if members:
+            out += f"👨‍👩‍👧‍👦━━━ FAMILY MEMBERS ({len(members)}) ━━━👨‍👩‍👧‍👦\n"
+            colors = ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"]
+            for i, m in enumerate(members):
+                dot = colors[i % len(colors)]
+                gender_icon = "👩" if m.get("gender", "").lower() == "f" else "👨" if m.get("gender", "").lower() == "m" else "🧑"
+                ekyc = "✅" if m.get("ekyc_status") == "Y" else "❌"
+                out += (f"{dot}━━ {i+1}\\. {esc_md(m.get('member_name', 'N/A'))} {gender_icon}\n"
+                        f"   📋 Relation  : {esc_md(m.get('relationship', 'N/A'))}\n"
+                        f"   🆔 UID       : `{esc_md(m.get('uid_masked', 'N/A'))}`\n"
+                        f"   ✅ eKYC      : {ekyc}\n"
+                        f"   📅 Updated   : {esc_md(m.get('cr_last_updated', 'N/A'))}\n\n")
+        if monthly:
+            out += "📊━━━ RECENT MONTHS ━━━📊\n"
+            for m in monthly[:3]:
+                out += f"📅 {esc_md(m.get('month', 'N/A'))}  \\|  👥 Members: {esc_md(m.get('member_count', 'N/A'))}\n"
+            out += "\n"
+        out += f"└─────────────────────────┘\n👑  {esc_md(OWNER)}  \\|  ⚡ ACTIVE"
+        return out
+    except Exception as e:
+        logger.error(f"format_adhar error: {e}")
+        return None
+
+def format_upi_result(data, upi_id):
+    def val(v):
+        s = str(v).strip() if v is not None else ""
+        return s if s and s not in ("None","null","nan","false","False","") else None
+    tick = lambda v: "✅" if v else "❌"
+    name = val(data.get("name"))
+    username = val(data.get("username"))
+    valid = data.get("valid")
+    acc_type = val(data.get("account_type"))
+    is_merchant = data.get("merchant")
+    merchant_ver = data.get("merchant_verified")
+    bank = val(data.get("bank"))
+    bank_type = val(data.get("bank_type"))
+    ifsc = val(data.get("ifsc"))
+    ifsc_d = data.get("ifsc_details", {})
+    branch = val(ifsc_d.get("BRANCH"))
+    address = val(ifsc_d.get("ADDRESS"))
+    city = val(ifsc_d.get("CITY"))
+    district = val(ifsc_d.get("DISTRICT"))
+    state = val(ifsc_d.get("STATE"))
+    contact = val(ifsc_d.get("CONTACT"))
+    rtgs = ifsc_d.get("RTGS")
+    neft = ifsc_d.get("NEFT")
+    imps = ifsc_d.get("IMPS")
+    upi_sup = ifsc_d.get("UPI")
+    lines = ["┌─────────────────────────┐", "│  💳  UPI LOOKUP          │", "├─────────────────────────┤", cb_md("💳 UPI ID      ", upi_id)]
+    if name:
+        lines.append(cb_md("👤 Name        ", name))
+    if username:
+        lines.append(cb_md("🔖 Username    ", username))
+    lines.append(f"✅ Valid        : {'✅ YES' if valid else '❌ NO'}")
+    if acc_type:
+        lines.append(cb_md("🏦 Account Type", acc_type))
+    if bank:
+        lines.append(cb_md("🏛️  Bank        ", bank))
+    if bank_type:
+        lines.append(cb_md("📂 Bank Type   ", bank_type))
+    if ifsc:
+        lines.append(cb_md("🔢 IFSC        ", ifsc))
+    if is_merchant is not None:
+        lines.append(f"🏪 Merchant    : {tick(is_merchant)}")
+    if merchant_ver is not None:
+        lines.append(f"✔️  Merch\\.Verif : {tick(merchant_ver)}")
+    if any([branch, address, city, district, state, contact]):
+        lines.extend(["├─────────────────────────┤", "│  🏦  IFSC DETAILS        │", "├─────────────────────────┤"])
+        if branch:
+            lines.append(cb_md("🏢 Branch      ", branch))
+        if address:
+            lines.append(cb_md("📍 Address     ", address))
+        if city:
+            lines.append(cb_md("🏙️  City        ", city))
+        if district:
+            lines.append(cb_md("📍 District    ", district))
+        if state:
+            lines.append(cb_md("🗺️  State       ", state))
+        if contact:
+            lines.append(cb_md("📞 Contact     ", contact))
+    if any([rtgs is not None, neft is not None, imps is not None, upi_sup is not None]):
+        lines.extend(["├─────────────────────────┤", "│  💸  PAYMENT MODES       │", "├─────────────────────────┤"])
+        if rtgs is not None:
+            lines.append(f"⚡ RTGS        : {tick(rtgs)}")
+        if neft is not None:
+            lines.append(f"🔄 NEFT        : {tick(neft)}")
+        if imps is not None:
+            lines.append(f"📲 IMPS        : {tick(imps)}")
+        if upi_sup is not None:
+            lines.append(f"💳 UPI         : {tick(upi_sup)}")
+    lines.append("└─────────────────────────┘")
+    lines.append(f"👑  {esc_md(OWNER)}  \\|  ⚡ ACTIVE")
+    return "\n".join(lines)
+
+def format_vehicle_result(data):
+    vd = data.get("vehicle_data", {}) if isinstance(data.get("vehicle_data"), dict) else {}
+    def v(val):
+        s = str(val).strip() if val is not None else ""
+        return s if s and s not in ("None","null","","nan","0","false","False") else None
+    mob = v(data.get("mobile_number"))
+    eng = v(data.get("engine_number"))
+    chassis = v(data.get("chassis_number"))
+    reg_no = v(data.get("vehicle_number") or data.get("vehicle"))
+    father = v(vd.get("ownerFatherName"))
+    reg_auth = v(vd.get("regAuthority"))
+    reg_date = v(vd.get("regDate"))
+    mfr = v(vd.get("manufacturer"))
+    model = v(vd.get("vehicle"))
+    variant = v(vd.get("variant"))
+    fuel = v(vd.get("fuelType"))
+    veh_class = v(vd.get("vehicleClass"))
+    veh_type = v(vd.get("vehicleType"))
+    cc = v(vd.get("cubicCapacity"))
+    seats = v(vd.get("seatCapacity"))
+    mfr_year = v(vd.get("manufacturerYear"))
+    present_addr = v(vd.get("presentAddress") or vd.get("permAddress"))
+    financer = v(vd.get("financerName"))
+    ins_company = v(vd.get("insuranceCompanyName"))
+    ins_upto = v(vd.get("insuranceUpto"))
+    ins_expired = vd.get("insuranceExpired")
+    pucc_valid = v(vd.get("puccValidUpto"))
+    pincode = v(vd.get("pincode"))
+    rto_data = vd.get("rtoData", {}) if isinstance(vd.get("rtoData"), dict) else {}
+    rto_name = v(rto_data.get("rtoName"))
+    rto_code = v(vd.get("rtoCode"))
+    is_comm = vd.get("isCommercial")
+    lines = ["┌────────────────────────────┐",
+             "│  🚗  VEHICLE INFO           │",
+             "└────────────────────────────┘",
+             "🔷━━━ REGISTRATION ━━━🔷"]
+    if reg_no:
+        lines.append(f"🚘  Reg No      : `{esc_md(reg_no)}`")
+    if reg_auth:
+        lines.append(f"🏛️   Reg Auth    : `{esc_md(reg_auth)}`")
+    if reg_date:
+        lines.append(f"📅  Reg Date    : `{esc_md(reg_date)}`")
+    if rto_code:
+        lines.append(f"🗂️   RTO Code    : `{esc_md(rto_code)}`")
+    if rto_name:
+        lines.append(f"🏢  RTO Name    : `{esc_md(rto_name)}`")
+    if any([father, mob, present_addr, pincode]):
+        lines.append("\n🔶━━━ OWNER DETAILS ━━━🔶")
+        if father:
+            lines.append(f"👨  Father       : `{esc_md(father)}`")
+        if mob:
+            lines.append(f"📞  Mobile       : `{esc_md(mob)}`")
+        if present_addr:
+            lines.append(f"📍  Address      : `{esc_md(present_addr)}`")
+        if pincode:
+            lines.append(f"📮  Pincode      : `{esc_md(pincode)}`")
+    if any([mfr, model, variant, fuel, veh_class, cc, seats, mfr_year]):
+        lines.append("\n🟢━━━ VEHICLE SPECS ━━━🟢")
+        if mfr:
+            lines.append(f"🏭  Manufacturer : `{esc_md(mfr)}`")
+        if model:
+            lines.append(f"🚗  Model        : `{esc_md(model)}`")
+        if variant:
+            lines.append(f"⚙️   Variant      : `{esc_md(variant)}`")
+        if fuel:
+            lines.append(f"⛽  Fuel Type    : `{esc_md(fuel)}`")
+        if veh_class:
+            lines.append(f"📋  Class        : `{esc_md(veh_class)}`")
+        if veh_type:
+            lines.append(f"🔖  Type         : `{esc_md(veh_type)}`")
+        if mfr_year:
+            lines.append(f"📆  Mfr Year     : `{esc_md(mfr_year)}`")
+        if cc:
+            lines.append(f"🔩  Cubic Cap    : `{esc_md(cc)} cc`")
+        if seats:
+            lines.append(f"💺  Seats        : `{esc_md(seats)}`")
+        if is_comm is not None:
+            lines.append(f"🏪  Commercial   : {'✅ YES' if is_comm else '❌ NO'}")
+    if any([eng, chassis]):
+        lines.append("\n🔵━━━ TECHNICAL ━━━🔵")
+        if eng:
+            lines.append(f"🔧  Engine No    : `{esc_md(eng)}`")
+        if chassis:
+            lines.append(f"🔩  Chassis No   : `{esc_md(chassis)}`")
+    if any([financer, ins_company, ins_upto, pucc_valid]):
+        lines.append("\n🟣━━━ FINANCE & INSURANCE ━━━🟣")
+        if financer:
+            lines.append(f"💰  Financer     : `{esc_md(financer)}`")
+        if ins_company:
+            lines.append(f"🛡️   Insurance    : `{esc_md(ins_company)}`")
+        if ins_upto:
+            expired = " ❌ EXPIRED" if ins_expired else " ✅ VALID"
+            lines.append(f"📅  Ins Upto     : `{esc_md(ins_upto)}`{expired}")
+        if pucc_valid:
+            lines.append(f"🌿  PUCC Valid   : `{esc_md(pucc_valid)}`")
+    lines.append(f"\n┌────────────────────────────┐")
+    lines.append(f"│  👑 {esc_md(OWNER)}  \\|  ⚡ ACTIVE  │")
+    lines.append("└────────────────────────────┘")
+    return "\n".join(lines)
+
+# ── DB Backup ──────────────────────────────
+def send_db_backup(chat_id):
+    all_users = db_get_all_users()
+    total = len(all_users)
+    if not total:
+        send_plain(chat_id, "📭  Database empty hai.")
+        return
+    status = send_plain(chat_id, "🗄️  Database se data fetch ho raha hai...")
+    if not status:
+        return
+    try:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        sorted_users = sorted(all_users, key=lambda u: u.get("total_searches", 0), reverse=True)
+        total_searches = sum(u.get("total_searches", 0) for u in all_users)
+        lines = [
+            "╔════════════════════════════════╗",
+            "║  🗄️  DATABASE BACKUP REPORT     ║",
+            "╠════════════════════════════════╣",
+            f"📊  Total Users    : {total}",
+            f"🔍  Total Searches : {total_searches}",
+            f"🕐  Generated      : {now}",
+            "╠════════════════════════════════╣",
+        ]
+        if sorted_users:
+            top = sorted_users[0]
+            lines.append(f"🏆  Top Searcher: {top.get('name') or top.get('username') or top.get('user_id')} — {top.get('total_searches', 0)} searches")
+        lines.append("────────────────────────────────")
+        for i, u in enumerate(sorted_users):
+            name = u.get("name", "no name")
+            uname = f"@{u.get('username')}" if u.get("username") else "no username"
+            srch = u.get("total_searches", 0)
+            fseen = (u.get("first_seen") or "N/A")[:10]
+            lseen = (u.get("last_seen") or "N/A")[:10]
+            lines.append(f"{i+1}. {name} | {uname} | ID: {u.get('user_id', 'N/A')} | 🔍 {srch}")
+            lines.append(f"   📅 First: {fseen}  |  Last: {lseen}")
+        lines.append("╚════════════════════════════════╝")
+        full_text = "\n".join(lines)
+        if len(full_text) > 4000:
+            payload = {
+                "chat_id": chat_id,
+                "caption": f"🗄️ RTF Bot DB — {total} users | 🔍 {total_searches} searches | {now}",
+            }
+            files = {
+                "document": (f"rtfbot_{datetime.now(timezone.utc).date()}.txt", full_text.encode("utf-8"), "text/plain")
+            }
+            tg_request("sendDocument", payload, files)
+            delete_message(chat_id, status["message_id"])
+        else:
+            edit_message_text(chat_id, status["message_id"], full_text)
+    except Exception as e:
+        logger.error(f"DB backup error: {e}")
+        edit_message_text(chat_id, status["message_id"], f"❌  Backup failed: {e}")
+
+# ── API Fetchers ─────────────────────────────
+def fetch_deep_api(number):
+    if not api_toggle["deep"]["enabled"]:
+        return None
+    raw = re.sub(r"[+\s]", "", str(number))
+    if len(raw) == 10 and not raw.startswith("91"):
+        raw = "91" + raw
+    # Use the updated deep API URL
+    url = DEEP_API_URL.format(query=raw)
+    logger.info(f"[DEEP API] Querying: {url}")
+    try:
+        data = api_fetch(url, timeout=20)
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logger.error(f"fetch_deep_api error: {e}")
+        return None
+
+def fetch_num_api(clean_phone):
+    if not api_toggle["num"]["enabled"]:
+        return []
+    try:
+        data = api_fetch(NUM_API_URL.replace("{number}", clean_phone))
+        return extract_records(data)
+    except Exception as e:
+        logger.error(f"fetch_num_api error: {e}")
+        return []
+
+def fetch_tg_new(term):
+    if not api_toggle["tg"]["enabled"]:
+        return None
+    try:
+        url = TG_NEW_API_URL.replace("{term}", quote_plus(term))
+        logger.info(f"[TG API] Querying: {url}")
+        data = api_fetch(url, timeout=20)
+        if data and data.get("success") is True and data.get("number") and data.get("number") != "N/A":
+            return {
+                "tgId": data.get("tg_id", "N/A"),
+                "phone": data.get("number"),
+                "countryCode": data.get("country_code", "N/A"),
+                "country": data.get("country", "N/A"),
+                "req_left": data.get("req_left"),
+                "req_total": data.get("req_total"),
+                "expiry": data.get("expiry"),
+                "developer": data.get("developer"),
+            }
+        return None
+    except Exception as e:
+        logger.error(f"fetch_tg_new error: {e}")
+        return None
+
+def fetch_tg_data(term):
+    term_lower = term.lower()
+    if term_lower in custom_tg_data:
+        return {"custom": True, "data": custom_tg_data[term_lower]}
+    result = fetch_tg_new(term)
+    return {"custom": False, "data": result}
+
+# ── Lookup Handlers ──────────────────────────
+def handle_number(chat_id, number, user_msg_id=None, user_id=None):
+    num_key = number.strip().lower()
+    if num_key in custom_num_data:
+        if user_id:
+            db_incr_search(user_id)
+        send_data_found(chat_id, user_msg_id, custom_num_data[num_key])
+        return
+
+    if not api_toggle["num"]["enabled"] and not api_toggle["deep"]["enabled"]:
+        send_data_not_found(chat_id, user_msg_id,
+            f"╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n{api_toggle['num']['offMsg']}")
+        return
+
+    status = send_plain(chat_id, f"🔍  Searching: {number} ...")
+    if not status:
+        return
+    try:
+        clean = re.sub(r"\s", "", number).replace("+91", "")
+        if clean.startswith("91") and len(clean) > 10:
+            clean = clean[2:]
+
+        records = fetch_num_api(clean)
+        deep_raw = fetch_deep_api(number)
+
+        delete_message(chat_id, status["message_id"])
+
+        deep_parsed = parse_deep_api_response(deep_raw)  # uses updated parser
+        deep_fmt = format_deep_result(deep_parsed, clean)
+
+        if not records and not deep_fmt:
+            send_data_not_found(chat_id, user_msg_id,
+                f"╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: {clean}\n⚠️  Koi record nahi mila")
+            return
+
+        if user_id:
+            db_incr_search(user_id)
+
+        full = ""
+        if records and api_toggle["num"]["enabled"]:
+            full += format_num_result(records, clean)
+        if deep_fmt:
+            full += deep_fmt
+
+        send_data_found(chat_id, user_msg_id, full)
+    except Exception as e:
+        logger.error(f"handle_number error: {e}")
+        delete_message(chat_id, status["message_id"])
+        send_plain(chat_id, "❌  API Error / Timeout.")
+
+def handle_tg(chat_id, term, user_msg_id=None, user_id=None):
+    term = term.strip().lstrip("@")
+    if not term:
+        send_data_not_found(chat_id, user_msg_id, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438")
+        return
+
+    status = send_plain(chat_id, f"🔍  Searching TG: {term} ...")
+    if not status:
+        return
+    try:
+        res = fetch_tg_data(term)
+        delete_message(chat_id, status["message_id"])
+
+        if res["custom"]:
+            if user_id:
+                db_incr_search(user_id)
+            send_data_found(chat_id, user_msg_id, res["data"])
+            return
+
+        data = res["data"]
+        if not data or not data.get("phone"):
+            send_data_not_found(chat_id, user_msg_id,
+                f"╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : {term}\n⚠️  Data nahi mila\n╚══════════════════════╝")
+            return
+
+        if user_id:
+            db_incr_search(user_id)
+
+        is_numeric = term.isdigit()
+        input_label = "🆔 UserID" if is_numeric else "👤 Username"
+        input_display = term if is_numeric else f"@{term}"
+
+        tg_block = (f"┌─────────────────────────┐\n"
+                    f"│  🔎  TG LOOKUP           │\n"
+                    f"├─────────────────────────┤\n"
+                    f"{cb_md(input_label, input_display)}\n"
+                    f"{cb_md('🆔 Telegram ID ', data.get('tgId', 'N/A'))}\n"
+                    f"{cb_md('📞 Phone       ', data.get('phone', 'N/A'))}\n"
+                    f"{cb_md('🌍 Country     ', data.get('country', 'N/A'))}\n"
+                    f"{cb_md('📱 Country Code', data.get('countryCode', 'N/A'))}\n"
+                    f"└─────────────────────────┘\n")
+
+        if data.get("phone"):
+            clean_phone = re.sub(r"[+\s]", "", data["phone"])
+            if clean_phone.startswith("91") and len(clean_phone) > 10:
+                clean_phone = clean_phone[2:]
+            num_res = fetch_num_api(clean_phone)
+            deep_raw = fetch_deep_api(data["phone"])
+            if num_res and api_toggle["num"]["enabled"]:
+                tg_block += "\n" + format_num_result(num_res, clean_phone)
+            deep_parsed = parse_deep_api_response(deep_raw)
+            deep_fmt = format_deep_result(deep_parsed, clean_phone)
+            if deep_fmt:
+                tg_block += deep_fmt
+
+        send_data_found(chat_id, user_msg_id, tg_block)
+    except Exception as e:
+        logger.error(f"handle_tg error: {e}")
+        delete_message(chat_id, status["message_id"])
+        send_plain(chat_id, "❌  Kuch gadbad ho gayi.")
+
+def handle_adhar(chat_id, adhar_raw, user_msg_id=None, user_id=None):
+    if not api_toggle["adhar"]["enabled"]:
+        send_data_not_found(chat_id, user_msg_id,
+            f"╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n{api_toggle['adhar']['offMsg']}")
+        return
+    status = send_plain(chat_id, f"🔍  Searching Aadhaar: {adhar_raw} ...")
+    if not status:
+        return
+    try:
+        data = api_fetch(ADHAR_API_URL.replace("{number}", adhar_raw))
+        delete_message(chat_id, status["message_id"])
+        if not data or not data.get("success"):
+            send_data_not_found(chat_id, user_msg_id,
+                f"╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: {adhar_raw}")
+            return
+        formatted = format_adhar_result(data, adhar_raw)
+        if not formatted:
+            send_data_not_found(chat_id, user_msg_id, f"❌  Data format error — Aadhaar: {adhar_raw}")
+            return
+        if user_id:
+            db_incr_search(user_id)
+        send_data_found(chat_id, user_msg_id, formatted)
+    except Exception as e:
+        logger.error(f"handle_adhar error: {e}")
+        delete_message(chat_id, status["message_id"])
+        send_plain(chat_id, "❌  API Error / Timeout.")
+
+def handle_upi(chat_id, upi_id, user_msg_id=None, user_id=None):
+    if not api_toggle["upi"]["enabled"]:
+        send_data_not_found(chat_id, user_msg_id,
+            f"╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n{api_toggle['upi']['offMsg']}")
+        return
+    status = send_plain(chat_id, f"🔍  Searching UPI: {upi_id} ...")
+    if not status:
+        return
+    try:
+        data = api_fetch(UPI_API_URL.replace("{upi}", upi_id.strip()))
+        delete_message(chat_id, status["message_id"])
+        if not data or not data.get("success"):
+            send_data_not_found(chat_id, user_msg_id,
+                f"╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: {upi_id}")
+            return
+        if user_id:
+            db_incr_search(user_id)
+        send_data_found(chat_id, user_msg_id, format_upi_result(data, upi_id))
+    except Exception as e:
+        logger.error(f"handle_upi error: {e}")
+        delete_message(chat_id, status["message_id"])
+        send_plain(chat_id, "❌  API Error / Timeout.")
+
+def handle_vehicle(chat_id, vehicle_no, user_msg_id=None, user_id=None):
+    if not api_toggle["vehicle"]["enabled"]:
+        send_data_not_found(chat_id, user_msg_id,
+            f"╔══════════════════════╗\n║  ⚠️  API OFFLINE       ║\n╚══════════════════════╝\n{api_toggle['vehicle']['offMsg']}")
+        return
+    vehicle_no = re.sub(r"\s", "", vehicle_no.upper())
+    status = send_plain(chat_id, f"🔍  Searching Vehicle: {vehicle_no} ...")
+    if not status:
+        return
+    try:
+        data = api_fetch(VEHICLE_API_URL.replace("{vehicle}", vehicle_no), timeout=20)
+        delete_message(chat_id, status["message_id"])
+        if not data or not data.get("success"):
+            send_data_not_found(chat_id, user_msg_id,
+                f"╔══════════════════════╗\n║  ❌ VEHICLE NOT FOUND  ║\n╚══════════════════════╝\n🚗  Vehicle: {vehicle_no}")
+            return
+        if user_id:
+            db_incr_search(user_id)
+        send_data_found(chat_id, user_msg_id, format_vehicle_result(data))
+    except Exception as e:
+        logger.error(f"handle_vehicle error: {e}")
+        delete_message(chat_id, status["message_id"])
+        send_plain(chat_id, "❌  API Error / Timeout.")
+
+# ── Callback Handler ─────────────────────────
+def handle_callback(cb):
+    from_data = cb["from"]
+    chat_id = cb["message"]["chat"]["id"]
+    msg_id = cb["message"]["message_id"]
+    data = cb["data"]
+    _is_admin = is_admin(from_data.get("username"))
+
+    if data == "verify":
+        join_cache.pop(from_data["id"], None)
+        missing = get_not_joined_channels(from_data["id"])
+        if missing:
+            answer_callback(cb["id"], f"❌ Abhi bhi join karo: {', '.join(c['name'] for c in missing)}", True)
+            buttons = [[{"text": f"➕ {ch['name']}", "url": f"https://t.me/{ch['username']}"}] for ch in missing]
+            buttons.append([{"text": "✅ VERIFY JOIN", "callback_data": "verify"}])
+            tg_request("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": msg_id, "reply_markup": {"inline_keyboard": buttons}})
+        else:
+            join_cache[from_data["id"]] = {"ok": True, "ts": time.time()}
+            answer_callback(cb["id"])
+            kb = admin_menu_kb() if _is_admin else main_menu_kb()
+            edit_message_text(chat_id, msg_id, MAIN_MENU_TEXT, extra={"reply_markup": kb})
+        return
+
+    # API toggle
+    if data.startswith("api_tog_") and _is_admin:
+        key = data.replace("api_tog_", "")
+        if key in api_toggle:
+            api_toggle[key]["enabled"] = not api_toggle[key]["enabled"]
+            st = "🟢 ON" if api_toggle[key]["enabled"] else "🔴 OFF"
+            answer_callback(cb["id"], f"{api_toggle[key]['label']} {st}", True)
+            edit_message_text(chat_id, msg_id, api_manager_text(), extra={"reply_markup": api_manager_kb()})
+        return
+
+    # API set custom off message
+    if data.startswith("api_msg_") and _is_admin:
+        key = data.replace("api_msg_", "")
+        if key in api_toggle:
+            user_state[from_data["id"]] = f"api_offmsg::{key}"
+            answer_callback(cb["id"])
+            send_plain(chat_id,
+                f"✏️  {api_toggle[key]['label']} ka off message set karo:\n\n"
+                f'Current: "{api_toggle[key]["offMsg"]}"\n\n'
+                f'Ab naya message type karo (ya "cancel" bhejo):')
+        return
+
+    answer_callback(cb["id"])
+    if not _is_admin and not check_join(from_data["id"]):
+        send_join_prompt(chat_id)
+        return
+
+    prompts = {
+        "menu_number": "╔════════════════════╗\n║  📞 NUMBER LOOKUP  ║\n╚════════════════════╝\n📥  Number bhejo:\n📌 Format: 9876543210",
+        "menu_tg": "╔═══════════════════════╗\n║   🔎  TG LOOKUP       ║\n╠═══════════════════════╣\n📥  Username YA numeric ID\n✅  rtfgamming / @rtfgamming / 8518042438\n╚═══════════════════════╝",
+        "menu_adhar": "╔══════════════════════╗\n║  🪪  AADHAAR LOOKUP  ║\n╚══════════════════════╝\n📥  Aadhaar number bhejo:\n📌 Example: 598229659586",
+        "menu_upi": "╔══════════════════════╗\n║  💳  UPI LOOKUP      ║\n╚══════════════════════╝\n📥  UPI ID bhejo:\n📌 Example: 70497398@axl",
+        "menu_vehicle": "╔══════════════════════╗\n║  🚗  VEHICLE LOOKUP  ║\n╚══════════════════════╝\n📥  Vehicle number bhejo:\n📌 Example: MH02FZ0555",
     }
-    // Format as a simple result card
-    return (
-      `┌─────────────────────────┐\n│  📋  RESULT              │\n├─────────────────────────┤\n` +
-      `🔍  Query  : \`${escMd(query)}\`\n` +
-      `📄  Result : \`${escMd(value)}\`\n` +
-      `└─────────────────────────┘\n` +
-      `👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`
-    );
-  }
-  return null;
-}
-
-// ── DB BACKUP ─────────────────────────────────
-async function sendDbBackup(chatId) {
-  if (!usersCol) { await sendPlain(chatId, "❌  MongoDB connected nahi hai."); return; }
-  const statusMsg = await sendPlain(chatId, "🗄️  Database se data fetch ho raha hai...");
-  try {
-    const allUsers = await dbGetAllUsers();
-    const total    = allUsers.length;
-    if (!total) { await tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: "📭  Database empty hai." }); return; }
-    const now    = new Date().toISOString().slice(0,16).replace("T"," ");
-    const sorted = [...allUsers].sort((a,b) => (b.total_searches||0) - (a.total_searches||0));
-    const totalSearches = allUsers.reduce((s,u) => s + (u.total_searches||0), 0);
-    const lines = [
-      "╔════════════════════════════════╗",
-      "║  🗄️  DATABASE BACKUP REPORT     ║",
-      "╠════════════════════════════════╣",
-      `📊  Total Users    : ${total}`,
-      `🔍  Total Searches : ${totalSearches}`,
-      `🕐  Generated      : ${now} UTC`,
-      "╠════════════════════════════════╣",
-    ];
-    if (sorted[0]) lines.push(`🏆  Top Searcher: ${sorted[0].name||sorted[0].username||sorted[0].user_id} — ${sorted[0].total_searches||0} searches`);
-    lines.push("────────────────────────────────");
-    sorted.forEach((u, i) => {
-      lines.push(`${i+1}. ${u.name||"no name"} | ${u.username ? "@"+u.username : "no username"} | ID: ${u.user_id||"N/A"} | 🔍 ${u.total_searches||0}`);
-      lines.push(`   📅 First: ${(u.first_seen||"").slice(0,10)||"N/A"}  |  Last: ${(u.last_seen||"").slice(0,10)||"N/A"}`);
-    });
-    lines.push("╚════════════════════════════════╝");
-    const fullText = lines.join("\n");
-    if (fullText.length > 4000) {
-      const buf  = Buffer.from(fullText, "utf8");
-      const form = new FormData();
-      form.append("chat_id", String(chatId));
-      form.append("caption", `🗄️ RTF Bot DB — ${total} users | 🔍 ${totalSearches} searches | ${now} UTC`);
-      form.append("document", buf, { filename: `rtfbot_${new Date().toISOString().slice(0,10)}.txt`, contentType: "text/plain" });
-      await fetch(`${TG_BASE}/sendDocument`, { method: "POST", body: form, ...agentForTelegram(TG_BASE) });
-      deleteMessage(chatId, statusMsg.message_id);
-    } else {
-      await tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: fullText });
-    }
-  } catch (e) {
-    console.error("[DB BACKUP]", e);
-    tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: `❌  Backup failed: ${e.message}` });
-  }
-}
-
-// ── ENHANCED API FETCH ──────────────────────
-async function apiFetch(url, timeout = 25000) {
-  try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(timeout),
-      ...agentForExternal(url),
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "close"
-      }
-    });
-    const text = await res.text();
-    try { return JSON.parse(text); } catch { return text; }
-  } catch (e) {
-    console.error(`[apiFetch] Error fetching ${url}:`, e.message);
-    throw e;
-  }
-}
-
-function buildUrl(key, query) {
-  return (apiUrls[key] || DEFAULT_API_URLS[key]).replace("{query}", encodeURIComponent(query));
-}
-
-// ── API WRAPPERS ─────────────────────────────
-async function fetchNumApi(cleanPhone) {
-  if (!apiToggle.num.enabled) return [];
-  try {
-    const data = await apiFetch(buildUrl("num", cleanPhone));
-    return extractRecords(data);
-  } catch (e) { console.error("[NUM API]", e.message); return []; }
-}
-
-async function fetchDeepApi(number) {
-  if (!apiToggle.deep.enabled) return null;
-  let clean = String(number).replace(/[+\s]/g, "").replace(/^91/, "");
-  if (clean.length > 10) clean = clean.slice(-10);
-  console.log(`[DEEP API] Querying: ${clean}`);
-  try {
-    const data = await apiFetch(buildUrl("deep", clean), 30000);
-    return data || null;
-  } catch (e) { console.error("[DEEP API]", e.message); return null; }
-}
-
-async function fetchTgApi(term) {
-  try {
-    const data = await apiFetch(buildUrl("tg", term), 30000);
-    if (!data || data.success === false) return null;
-    const phone = data.number ? String(data.number).trim() : null;
-    if (!phone || ["","N/A","null","None","undefined","0"].includes(phone)) return null;
-    return {
-      tgId:        String(data.tg_id        || "N/A").trim(),
-      phone:       phone,
-      country:     String(data.country      || "N/A").trim(),
-      countryCode: String(data.country_code || "N/A").trim(),
-    };
-  } catch (e) { console.error("[TG API]", e.message); return null; }
-}
-
-// ══════════════════════════════════════════════
-//  LOOKUP HANDLERS
-// ══════════════════════════════════════════════
-
-async function handleNumber(chatId, number, userMsgId = null, userId = null) {
-  const numKey = number.trim().replace(/[+\s]/g,"").replace(/^91/,"");
-  if (customNumData.has(numKey)) {
-    if (userId) dbIncrSearch(userId);
-    await sendDataFound(chatId, userMsgId, customNumData.get(numKey));
-    return;
-  }
-  if (!apiToggle.num.enabled && !apiToggle.deep.enabled) {
-    await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.num.offMsg}`);
-    return;
-  }
-  const statusMsg = await sendPlain(chatId, `🔍  Searching: ${number} ...`);
-  try {
-    let clean = number.trim().replace(/\s/g,"").replace("+91","");
-    if (clean.startsWith("91") && clean.length > 10) clean = clean.slice(2);
-
-    const [records, deepApiRaw] = await Promise.all([
-      fetchNumApi(clean),
-      fetchDeepApi(clean),
-    ]);
-    deleteMessage(chatId, statusMsg.message_id);
-
-    const deepRecords = parseDeepApiResponse(deepApiRaw);
-    const deepFmt     = formatDeepResult(deepRecords, clean);
-
-    if (!records.length && !deepFmt) {
-      await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: ${clean}\n⚠️  Koi record nahi mila`);
-      return;
-    }
-    if (userId) dbIncrSearch(userId);
-    let full = "";
-    if (records.length && apiToggle.num.enabled) {
-      // Check custom response config for num
-      const customFmt = applyResponseConfig("num", { result: records }, clean);
-      full += customFmt || formatNumResult(records, clean);
-    }
-    if (deepFmt) full += deepFmt;
-    await sendDataFound(chatId, userMsgId, full);
-  } catch (e) {
-    console.error("[NUM LOOKUP]", e.message);
-    deleteMessage(chatId, statusMsg.message_id);
-    await sendPlain(chatId, "❌  API Error / Timeout.");
-  }
-}
-
-async function handleTg(chatId, term, userMsgId = null, userId = null) {
-  const rawInput = term.trim();
-  term = rawInput.replace(/^@/, "");
-  if (!term) {
-    await sendDataNotFound(chatId, userMsgId, "❌  Kuch toh bhejo!\n✅ /tg rtfgamming\n✅ /tg 8518042438");
-    return;
-  }
-  const termKey = term.toLowerCase();
-  if (customTgData.has(termKey)) {
-    if (userId) dbIncrSearch(userId);
-    await sendDataFound(chatId, userMsgId, customTgData.get(termKey));
-    return;
-  }
-  if (!apiToggle.tg.enabled) {
-    await sendDataNotFound(chatId, userMsgId,
-      `╔══════════════════════╗\n║  ⚠️  API OFFLINE      ║\n╠══════════════════════╣\n${apiToggle.tg.offMsg}\n╚══════════════════════╝`
-    );
-    return;
-  }
-  const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
-  try {
-    const rawData = await apiFetch(buildUrl("tg", term), 30000);
-    deleteMessage(chatId, statusMsg.message_id);
-
-    // Check custom response config for tg
-    const customFmt = applyResponseConfig("tg", rawData, term);
-    if (customFmt) {
-      if (userId) dbIncrSearch(userId);
-      await sendDataFound(chatId, userMsgId, customFmt);
-      return;
-    }
-
-    // Default TG processing
-    if (!rawData || rawData.success === false) {
-      await sendDataNotFound(chatId, userMsgId,
-        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
-      );
-      return;
-    }
-    const phone = rawData.number ? String(rawData.number).trim() : null;
-    if (!phone || ["","N/A","null","None","undefined","0"].includes(phone)) {
-      await sendDataNotFound(chatId, userMsgId,
-        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
-      );
-      return;
-    }
-    const result = {
-      tgId:        String(rawData.tg_id        || "N/A").trim(),
-      phone:       phone,
-      country:     String(rawData.country      || "N/A").trim(),
-      countryCode: String(rawData.country_code || "N/A").trim(),
-    };
-    if (userId) dbIncrSearch(userId);
-    const isUserId = /^\d{5,}$/.test(term);
-    let tgBlock =
-      `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n`;
-    if (!isUserId) {
-      const displayUsername = rawInput.startsWith("@") ? rawInput : `@${term}`;
-      tgBlock += `${cbMd("💻 Username    ", displayUsername)}\n`;
-    }
-    tgBlock +=
-      `${cbMd("🆔 Telegram ID ", result.tgId)}\n` +
-      `${cbMd("📞 Number      ", result.phone)}\n` +
-      `${cbMd("🌍 Country     ", result.country)}\n` +
-      `${cbMd("📱 Country Code", result.countryCode)}\n` +
-      `└─────────────────────────┘\n`;
-    if (result.phone) {
-      let cleanPhone = result.phone.replace(/[+\s]/g, "").replace(/^91/, "");
-      if (cleanPhone.length > 10) cleanPhone = cleanPhone.slice(-10);
-      const [numRes, deepApiRaw] = await Promise.all([
-        fetchNumApi(cleanPhone),
-        fetchDeepApi(cleanPhone),
-      ]);
-      if (numRes.length && apiToggle.num.enabled) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
-      const deepRecords = parseDeepApiResponse(deepApiRaw);
-      const df = formatDeepResult(deepRecords, cleanPhone);
-      if (df) tgBlock += df;
-    }
-    await sendDataFound(chatId, userMsgId, tgBlock);
-  } catch (e) {
-    console.error("[TG LOOKUP]", e.message);
-    deleteMessage(chatId, statusMsg.message_id);
-    await sendPlain(chatId, "❌  Kuch gadbad ho gayi.");
-  }
-}
-
-async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
-  if (!apiToggle.adhar.enabled) {
-    await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.adhar.offMsg}`);
-    return;
-  }
-  const statusMsg = await sendPlain(chatId, `🔍  Searching Aadhaar: ${adharRaw} ...`);
-  try {
-    const data = await apiFetch(buildUrl("adhar", adharRaw.trim()), 30000);
-    deleteMessage(chatId, statusMsg.message_id);
-
-    const customFmt = applyResponseConfig("adhar", data, adharRaw);
-    if (customFmt) {
-      if (userId) dbIncrSearch(userId);
-      await sendDataFound(chatId, userMsgId, customFmt);
-      return;
-    }
-
-    if (!data || !data.success || !data.results || !data.results.length) {
-      await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: ${adharRaw}`);
-      return;
-    }
-    const formatted = formatAdharResult(data, adharRaw);
-    if (!formatted) { await sendDataNotFound(chatId, userMsgId, `❌  Data format error — Aadhaar: ${adharRaw}`); return; }
-    if (userId) dbIncrSearch(userId);
-    await sendDataFound(chatId, userMsgId, formatted);
-  } catch (e) {
-    console.error("[ADHAR]", e.message);
-    deleteMessage(chatId, statusMsg.message_id);
-    await sendPlain(chatId, "❌  API Error / Timeout.");
-  }
-}
-
-async function handleUpi(chatId, upiId, userMsgId = null, userId = null) {
-  if (!apiToggle.upi.enabled) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.upi.offMsg}`); return; }
-  const statusMsg = await sendPlain(chatId, `🔍  Searching UPI: ${upiId} ...`);
-  try {
-    const data = await apiFetch(buildUrl("upi", upiId.trim()));
-    deleteMessage(chatId, statusMsg.message_id);
-
-    const customFmt = applyResponseConfig("upi", data, upiId);
-    if (customFmt) {
-      if (userId) dbIncrSearch(userId);
-      await sendDataFound(chatId, userMsgId, customFmt);
-      return;
-    }
-
-    if (!data.success) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: ${upiId}`); return; }
-    if (userId) dbIncrSearch(userId);
-    await sendDataFound(chatId, userMsgId, formatUpiResult(data, upiId));
-  } catch (e) { console.error("[UPI]", e.message); deleteMessage(chatId, statusMsg.message_id); await sendPlain(chatId, "❌  API Error / Timeout."); }
-}
-
-async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null) {
-  if (!apiToggle.vehicle.enabled) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════════╗\n║  ⚠️  API OFFLINE       ║\n╚══════════════════════╝\n${apiToggle.vehicle.offMsg}`); return; }
-  vehicleNo = vehicleNo.trim().toUpperCase().replace(/\s/g,"");
-  const statusMsg = await sendPlain(chatId, `🔍  Searching Vehicle: ${vehicleNo} ...`);
-  try {
-    const data = await apiFetch(buildUrl("vehicle", vehicleNo), 25000);
-    deleteMessage(chatId, statusMsg.message_id);
-
-    const customFmt = applyResponseConfig("vehicle", data, vehicleNo);
-    if (customFmt) {
-      if (userId) dbIncrSearch(userId);
-      await sendDataFound(chatId, userMsgId, customFmt);
-      return;
-    }
-
-    if (!data || !data.success) {
-      await sendDataNotFound(chatId, userMsgId, `╔══════════════════════╗\n║  ❌ VEHICLE NOT FOUND  ║\n╚══════════════════════╝\n🚗  Vehicle: ${vehicleNo}`);
-      return;
-    }
-    if (userId) dbIncrSearch(userId);
-    await sendDataFound(chatId, userMsgId, formatVehicleResult(data));
-  } catch (e) { console.error("[VEHICLE]", e.message); deleteMessage(chatId, statusMsg.message_id); await sendPlain(chatId, "❌  API Error / Timeout."); }
-}
-
-// ══════════════════════════════════════════════
-//  CHANNEL ADD FLOW HANDLER
-// ══════════════════════════════════════════════
-async function handleChannelAddFlow(chatId, from, text, choice) {
-  if (choice === "ch_add_step1") {
-    const raw = text.trim();
-    let ref = raw.replace(/^@/, "");
-    let isPrivate = false;
-    if (raw.startsWith("-100") || /^-\d+$/.test(raw)) { isPrivate = true; ref = raw; }
-    const statusMsg = await sendPlain(chatId, `🔍 Channel verify ho raha hai: ${raw} ...`);
-    const testResult = await tgApi("getChat", { chat_id: isPrivate ? parseInt(ref) : `@${ref}` });
-    deleteMessage(chatId, statusMsg.message_id);
-    if (!testResult) {
-      await sendPlain(chatId, "╔══════════════════════════╗\n║  ❌  CHANNEL NOT FOUND   ║\n╠══════════════════════════╣\n❌  Bot is channel ka member nahi hai\n   ya channel exist nahi karta.\n\n✅  Bot ko channel admin banao pehle!\n╚══════════════════════════╝");
-      userState.delete(from.id);
-      return;
-    }
-    const autoName = testResult.title || "";
-    userState.set(from.id, `ch_add_step2::${isPrivate ? "id:" + ref : "user:" + ref}::${autoName}`);
-    await sendPlain(chatId,
-      `╔══════════════════════════╗\n║  ✅  CHANNEL FOUND        ║\n╠══════════════════════════╣\n` +
-      `📢  Title   : ${testResult.title || "N/A"}\n🔗  Type    : ${isPrivate ? "🔒 Private" : "🌐 Public"}\n` +
-      `╠══════════════════════════╣\n📥  Channel ka display name bhejo\n   Ya "skip" karo auto title ke liye:\n╚══════════════════════════╝`
-    );
-    return;
-  }
-  if (typeof choice === "string" && choice.startsWith("ch_add_step2::")) {
-    const parts = choice.split("::");
-    const refPart = parts[1];
-    const autoName = parts.slice(2).join("::") || "";
-    const displayName = text.trim().toLowerCase() === "skip" ? (autoName || "📢 Channel") : text.trim();
-    const isPrivate = refPart.startsWith("id:");
-    const refValue  = refPart.replace(/^(id:|user:)/, "");
-    if (isPrivate) {
-      userState.set(from.id, `ch_add_step3::${refPart}::${displayName}`);
-      await sendPlain(chatId, "╔══════════════════════════╗\n║  🔒  PRIVATE CHANNEL      ║\n╠══════════════════════════╣\n📥  Invite link bhejo (optional):\n   Example: https://t.me/+xxxxxx\n\n   Ya \"skip\" karo bina invite link ke:\n╚══════════════════════════╝");
-      return;
-    }
-    CHANNELS.push({ name: displayName, username: refValue, id: null, invite_link: null });
-    await dbSaveChannels();
-    joinCache.clear();
-    userState.delete(from.id);
-    await sendPlain(chatId, `╔══════════════════════════╗\n║  ✅  CHANNEL ADDED        ║\n╠══════════════════════════╣\n📢  Name     : ${displayName}\n🌐  Username : @${refValue}\n📊  Total    : ${CHANNELS.length} channels\n╚══════════════════════════╝`);
-    return;
-  }
-  if (typeof choice === "string" && choice.startsWith("ch_add_step3::")) {
-    const parts = choice.split("::");
-    const refPart = parts[1];
-    const displayName = parts.slice(2).join("::");
-    const refValue = refPart.replace(/^id:/, "");
-    const inviteLink = text.trim().toLowerCase() === "skip" ? null : text.trim();
-    CHANNELS.push({ name: displayName, username: null, id: parseInt(refValue) || refValue, invite_link: inviteLink });
-    await dbSaveChannels();
-    joinCache.clear();
-    userState.delete(from.id);
-    await sendPlain(chatId, `╔══════════════════════════╗\n║  ✅  CHANNEL ADDED        ║\n╠══════════════════════════╣\n📢  Name     : ${displayName}\n🔒  ID       : ${refValue}\n🔗  Invite   : ${inviteLink || "❌ None"}\n📊  Total    : ${CHANNELS.length} channels\n╚══════════════════════════╝`);
-    return;
-  }
-}
-
-// ══════════════════════════════════════════════
-//  CALLBACKS — FIXED
-// ══════════════════════════════════════════════
-async function handleCallback(cb) {
-  const from     = cb.from;
-  const chatId   = cb.message.chat.id;
-  const msgId    = cb.message.message_id;
-  const data     = cb.data;
-  const _isAdmin = isAdmin(from.username);
-
-  // ── VERIFY JOIN ──
-  if (data === "verify") {
-    joinCache.delete(from.id);
-    const missing = await getNotJoinedChannels(from.id);
-    if (missing.length) {
-      await answerCallback(cb.id, `❌ Abhi bhi join karo: ${missing.map(c=>c.name).join(", ")}`, true);
-      const btns = missing.map(c => {
-        const url = c.invite_link ? c.invite_link : c.username ? `https://t.me/${c.username}` : null;
-        if (!url) return null;
-        return [{ text: `➕ ${c.name}`, url }];
-      }).filter(Boolean);
-      btns.push([{ text: "✅ VERIFY JOIN", callback_data: "verify" }]);
-      await tgApi("editMessageReplyMarkup", { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: btns } });
-    } else {
-      joinCache.set(from.id, { ok: true, ts: Date.now() });
-      await answerCallback(cb.id);
-      const kb = _isAdmin ? adminMenuKb() : mainMenuKb();
-      await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: MAIN_MENU_TEXT, reply_markup: kb });
-    }
-    return;
-  }
-
-  // ── API TOGGLE (admin only) ──
-  if (data.startsWith("api_tog_") && _isAdmin) {
-    const key = data.replace("api_tog_", "");
-    if (apiToggle[key]) {
-      apiToggle[key].enabled = !apiToggle[key].enabled;
-      const st = apiToggle[key].enabled ? "🟢 ON" : "🔴 OFF";
-      await answerCallback(cb.id, `${apiToggle[key].label} ${st}`, true);
-      await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() });
-    }
-    return;
-  }
-
-  // ── API OFF MESSAGE SET (admin only) ──
-  if (data.startsWith("api_msg_") && _isAdmin) {
-    const key = data.replace("api_msg_", "");
-    if (apiToggle[key]) {
-      userState.set(from.id, `api_offmsg::${key}`);
-      await answerCallback(cb.id);
-      await sendPlain(chatId, `✏️  ${apiToggle[key].label} ka off message set karo:\n\nCurrent: "${apiToggle[key].offMsg}"\n\nNaya message type karo (ya "cancel" bhejo):`);
-    }
-    return;
-  }
-
-  // ── API URL MANAGER — MAIN PANEL (FIXED: use MarkdownV2) ──
-  if (data === "menu_apiurl" && _isAdmin) {
-    await answerCallback(cb.id);
-    await tgApi("editMessageText", {
-      chat_id: chatId,
-      message_id: msgId,
-      text: apiUrlManagerText(),
-      parse_mode: "MarkdownV2",
-      disable_web_page_preview: true,
-      reply_markup: apiUrlManagerKb(),
-    });
-    return;
-  }
-
-  // ── API URL EDIT BUTTON — Step 1: Ask for new URL ──
-  if (data.startsWith("apiurl_edit_") && _isAdmin) {
-    const key = data.replace("apiurl_edit_", "");
-    if (DEFAULT_API_URLS[key] !== undefined) {
-      await answerCallback(cb.id);
-      userState.set(from.id, `apiurl_set_url::${key}`);
-      const currentUrl = apiUrls[key] || DEFAULT_API_URLS[key];
-      const currentCfg = apiResponseConfig[key] || "raw";
-      const cfgLabel = currentCfg === "raw" ? "Default (pura format)" : `Field: ${currentCfg.replace("field:", "")}`;
-      await sendPlain(chatId,
-        `╔══════════════════════════╗\n║  🔗  API URL CHANGE       ║\n╠══════════════════════════╣\n` +
-        `API         : ${API_LABELS[key]}\n\n` +
-        `📌 Current URL:\n${currentUrl}\n\n` +
-        `📋 Current Response Config:\n${cfgLabel}\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📥 STEP 1: Naya URL bhejo\n` +
-        `⚠️  URL mein {query} hona ZAROORI hai\n` +
-        `   Example: https://api.example.com/search?q={query}&key=abc\n\n` +
-        `Ya "cancel" type karo:\n╚══════════════════════════╝`
-      );
-    }
-    return;
-  }
-
-  // ── API URL RESET ──
-  if (data.startsWith("apiurl_reset_") && _isAdmin) {
-    const key = data.replace("apiurl_reset_", "");
-    if (DEFAULT_API_URLS[key]) {
-      apiUrls[key] = DEFAULT_API_URLS[key];
-      apiResponseConfig[key] = "raw";
-      await dbSaveApiUrls();
-      await answerCallback(cb.id, `🔄 ${API_LABELS[key]} reset ho gaya!`, true);
-      await tgApi("editMessageText", {
-        chat_id: chatId,
-        message_id: msgId,
-        text: apiUrlManagerText(),
-        parse_mode: "MarkdownV2",
-        disable_web_page_preview: true,
-        reply_markup: apiUrlManagerKb(),
-      });
-    }
-    return;
-  }
-
-  // ── CHANNEL MANAGER ──
-  if (data === "menu_channels" && _isAdmin) {
-    await answerCallback(cb.id);
-    await tgApi("editMessageText", {
-      chat_id: chatId, message_id: msgId,
-      text: channelManagerText(), parse_mode: "MarkdownV2",
-      reply_markup: channelManagerKb(),
-    });
-    return;
-  }
-
-  if (data === "ch_add" && _isAdmin) {
-    await answerCallback(cb.id);
-    userState.set(from.id, "ch_add_step1");
-    await sendPlain(chatId, "╔══════════════════════════╗\n║  ➕  CHANNEL ADD          ║\n╠══════════════════════════╣\n📥  Channel username ya ID bhejo:\n\n🌐 Public  : RTFGAMING1 ya @RTFGAMING1\n🔒 Private : -1001234567890\n\n⚠️  Bot ko pehle channel admin\n   banana zaroori hai!\n╚══════════════════════════╝");
-    return;
-  }
-
-  if (data.startsWith("ch_del_") && _isAdmin) {
-    const idx = parseInt(data.replace("ch_del_", ""));
-    await answerCallback(cb.id);
-    if (!isNaN(idx) && CHANNELS[idx]) {
-      const removed = CHANNELS.splice(idx, 1)[0];
-      await dbSaveChannels();
-      joinCache.clear();
-      await tgApi("editMessageText", {
-        chat_id: chatId, message_id: msgId,
-        text: channelManagerText(), parse_mode: "MarkdownV2",
-        reply_markup: channelManagerKb(),
-      });
-      await sendPlain(chatId, `╔══════════════════════════╗\n║  🗑️  CHANNEL REMOVED      ║\n╠══════════════════════════╣\n📢  Removed : ${removed.name}\n📊  Total   : ${CHANNELS.length} channels\n╚══════════════════════════╝`);
-    } else {
-      await sendPlain(chatId, "❌  Channel nahi mila.");
-    }
-    return;
-  }
-
-  // ── CHECK JOIN FOR NON-ADMIN ──
-  await answerCallback(cb.id);
-  if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
-
-  // ── USER MENU PROMPTS ──
-  const prompts = {
-    menu_number:  "╔════════════════════╗\n║  📞 NUMBER LOOKUP  ║\n╚════════════════════╝\n📥  Number bhejo:\n📌 Format: 9876543210",
-    menu_tg:      "╔═══════════════════════╗\n║   🔎  TG LOOKUP       ║\n╠═══════════════════════╣\n📥  Username YA numeric ID\n✅  rtfgamming / @rtfgamming / 8518042438\n╚═══════════════════════╝",
-    menu_adhar:   "╔══════════════════════╗\n║  🪪  AADHAAR LOOKUP  ║\n╚══════════════════════╝\n📥  Aadhaar number bhejo:\n📌 Example: 598229659586",
-    menu_upi:     "╔══════════════════════╗\n║  💳  UPI LOOKUP      ║\n╚══════════════════════╝\n📥  UPI ID bhejo:\n📌 Example: 70497398@axl",
-    menu_vehicle: "╔══════════════════════╗\n║  🚗  VEHICLE LOOKUP  ║\n╚══════════════════════╝\n📥  Vehicle number bhejo:\n📌 Example: MH02FZ0555",
-  };
-  const stateMap = { menu_number:"number", menu_tg:"tg", menu_adhar:"adhar", menu_upi:"upi", menu_vehicle:"vehicle" };
-
-  if (stateMap[data]) { userState.set(from.id, stateMap[data]); await sendPlain(chatId, prompts[data]); return; }
-  if (data === "menu_help")  { await sendPlain(chatId, HELP_TEXT); return; }
-  if (data === "menu_owner") { await sendPlain(chatId, "╔══════════════════╗\n║  👑  OWNER INFO   ║\n╚══════════════════╝\n🔗 https://t.me/RTFGAMMING"); return; }
-
-  if (!_isAdmin) return;
-
-  // ── ADMIN-ONLY MENU ACTIONS ──
-  if (data === "menu_users")      { const c = await dbUserCount(); await sendPlain(chatId, `📊 Total Users: ${c}\n🗄️ Source: MongoDB`); return; }
-  if (data === "menu_dbbackup")   { await sendDbBackup(chatId); return; }
-  if (data === "menu_adminlist")  { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST   ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
-  if (data === "menu_broadcast")  { userState.set(from.id, "broadcast"); await sendPlain(chatId, "📢  Broadcast message type karo:"); return; }
-  if (data === "menu_setcustomtg")  { userState.set(from.id, "setcustomtg_step1");  await sendPlain(chatId, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming"); return; }
-  if (data === "menu_setcustomnum") { userState.set(from.id, "setcustomnum_step1"); await sendPlain(chatId, "📥  Number bhejo jiska data set karna hai\n📌  Example: 9876543210"); return; }
-
-  if (data === "menu_api") {
-    await tgApi("editMessageText", {
-      chat_id: chatId, message_id: msgId,
-      text: apiManagerText(),
-      reply_markup: apiManagerKb(),
-    });
-    return;
-  }
-
-  if (data === "menu_adminpanel") {
-    await sendPlain(chatId,
-      "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
-      "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
-      "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n" +
-      "🔗 /apiurlmanager  📢 /channelmanager\n╚══════════════════════════╝"
-    );
-    return;
-  }
-}
-
-// ── MESSAGE ROUTER ────────────────────────────
-async function handleUpdate(update) {
-  try {
-    if (update.callback_query) return await handleCallback(update.callback_query);
-    const msg = update.message || update.edited_message;
-    if (!msg) return;
-    const from     = msg.from;
-    if (!from || from.is_bot) return;
-    const chatId   = msg.chat.id;
-    const msgId    = msg.message_id;
-    const text     = (msg.text || "").trim();
-    const _isAdmin = isAdmin(from.username);
-
-    dbSaveUser(from);
-    if (!text) return;
-
-    if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin",
-        "/setcustomtg","/delcustomtg","/setcustomnum","/delcustomnum","/listcustom","/dbbackup",
-        "/apimanager","/apiurlmanager","/channelmanager"]
-        .some(c => text.toLowerCase().startsWith(c))) {
-      return await handleAdminText(chatId, from.id, text);
-    }
-
-    const choice = userState.get(from.id);
-    if (!choice) return;
-
-    if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
-
-    // ── API OFF MESSAGE SET ──
-    if (typeof choice === "string" && choice.startsWith("api_offmsg::") && _isAdmin) {
-      const key = choice.split("::")[1];
-      userState.delete(from.id);
-      if (text.toLowerCase() === "cancel") { await sendPlain(chatId, "❌  Cancel ho gaya."); return; }
-      if (apiToggle[key]) {
-        apiToggle[key].offMsg = text.trim();
-        await sendPlain(chatId, `✅  ${apiToggle[key].label} ka off message set ho gaya!\n\n"${text.trim()}"`);
-      }
-      return;
-    }
-
-    // ══════════════════════════════════════════════
-    //  API URL SET FLOW — 2 STEPS
-    //  Step 1: apiurl_set_url::<key>  → user sends URL
-    //  Step 2: apiurl_set_resp::<key> → user sends response field (or "raw")
-    // ══════════════════════════════════════════════
-
-    // STEP 1 — Receive new URL
-    if (typeof choice === "string" && choice.startsWith("apiurl_set_url::") && _isAdmin) {
-      const key = choice.split("::")[1];
-      if (text.toLowerCase() === "cancel") {
-        userState.delete(from.id);
-        await sendPlain(chatId, "❌  Cancel ho gaya.");
-        return;
-      }
-      if (!text.includes("{query}")) {
-        await sendPlain(chatId,
-          `❌  URL mein {query} nahi hai!\n\nExample: https://api.example.com/search?q={query}&key=abc\n\nDobara URL bhejo ya "cancel" karo:`
-        );
-        return; // keep state, let them try again
-      }
-      if (!DEFAULT_API_URLS[key]) {
-        userState.delete(from.id);
-        await sendPlain(chatId, "❌  Invalid API key.");
-        return;
-      }
-      // Save URL, move to step 2
-      apiUrls[key] = text.trim();
-      userState.set(from.id, `apiurl_set_resp::${key}`);
-      await sendPlain(chatId,
-        `╔══════════════════════════╗\n║  ✅  URL SAVE HO GAYI     ║\n╠══════════════════════════╣\n` +
-        `API : ${API_LABELS[key]}\n` +
-        `URL : ${text.trim().slice(0, 60)}${text.length > 60 ? "..." : ""}\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📥 STEP 2: Response format set karo\n\n` +
-        `API ka response user ko kaise dikhana hai?\n\n` +
-        `🟢 "raw"     — Default format use karo (recommended)\n` +
-        `🔵 field name — Sirf ek specific field dikhao\n` +
-        `   Example: "name" ya "data.result" ya "number"\n\n` +
-        `"raw" type karo ya field name bhejo:\n╚══════════════════════════╝`
-      );
-      return;
-    }
-
-    // STEP 2 — Receive response field config
-    if (typeof choice === "string" && choice.startsWith("apiurl_set_resp::") && _isAdmin) {
-      const key = choice.split("::")[1];
-      userState.delete(from.id);
-      if (text.toLowerCase() === "cancel") {
-        // URL already saved in step 1, just skip response config
-        await dbSaveApiUrls();
-        await sendPlain(chatId, `✅  URL save ho gayi. Response config unchanged.\nAPI: ${API_LABELS[key]}`);
-        return;
-      }
-      const cfgValue = text.trim().toLowerCase() === "raw" ? "raw" : `field:${text.trim()}`;
-      apiResponseConfig[key] = cfgValue;
-      await dbSaveApiUrls();
-      const cfgLabel = cfgValue === "raw" ? "Default format (pura response)" : `Sirf field: "${text.trim()}"`;
-      await sendPlain(chatId,
-        `╔══════════════════════════╗\n║  ✅  API FULLY CONFIGURED ║\n╠══════════════════════════╣\n` +
-        `API      : ${API_LABELS[key]}\n` +
-        `URL      : ${apiUrls[key].slice(0, 55)}${apiUrls[key].length > 55 ? "..." : ""}\n` +
-        `Response : ${cfgLabel}\n` +
-        `╠══════════════════════════╣\n` +
-        `✅ Done\\. Ab /apiurlmanager se check karo.\n╚══════════════════════════╝`
-      );
-      return;
+    state_map = {
+        "menu_number": "number",
+        "menu_tg": "tg",
+        "menu_adhar": "adhar",
+        "menu_upi": "upi",
+        "menu_vehicle": "vehicle",
     }
 
-    // ── CHANNEL ADD FLOW ──
-    if (_isAdmin && (
-      choice === "ch_add_step1" ||
-      (typeof choice === "string" && choice.startsWith("ch_add_step2::")) ||
-      (typeof choice === "string" && choice.startsWith("ch_add_step3::"))
-    )) {
-      await handleChannelAddFlow(chatId, from, text, choice);
-      return;
-    }
+    if data in state_map:
+        user_state[from_data["id"]] = state_map[data]
+        send_plain(chat_id, prompts[data])
+        return
+    if data == "menu_help":
+        send_plain(chat_id, HELP_TEXT)
+        return
+    if data == "menu_owner":
+        send_plain(chat_id, f"╔══════════════════╗\n║  👑  OWNER INFO   ║\n╚══════════════════╝\n🔗 https://t.me/{OWNER.lstrip('@')}")
+        return
 
-    // ── BROADCAST ──
-    if (choice === "broadcast" && _isAdmin) {
-      const users = await dbGetAllUsers();
-      const uids  = users.map(u => u.user_id);
-      const status = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
-      let ok = 0, fail = 0;
-      for (const uid of uids) { const r = await tgApi("sendMessage", { chat_id: uid, text }); r ? ok++ : fail++; await new Promise(r => setTimeout(r, 50)); }
-      await tgApi("editMessageText", { chat_id: chatId, message_id: status.message_id,
-        text: `╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}` });
-    }
-    else if (choice === "number")  { await handleNumber(chatId, text, msgId, from.id); }
-    else if (choice === "tg")      { await handleTg(chatId, text, msgId, from.id); }
-    else if (choice === "adhar")   { await handleAdhar(chatId, text, msgId, from.id); }
-    else if (choice === "upi")     { await handleUpi(chatId, text, msgId, from.id); }
-    else if (choice === "vehicle") { await handleVehicle(chatId, text, msgId, from.id); }
-    else if (choice === "setcustomtg_step1" && _isAdmin) {
-      userState.set(from.id, `setcustomtg_step2::${text.trim().replace(/^@/,"").toLowerCase()}`);
-      await sendPlain(chatId, `✅  Username: ${text.trim()}\n\n📥  Ab custom data bhejo:`);
-      return;
-    } else if (typeof choice === "string" && choice.startsWith("setcustomtg_step2::") && _isAdmin) {
-      const targetKey = choice.split("::")[1];
-      customTgData.set(targetKey, text.trim());
-      dbSaveData(`customtg:${targetKey}`, { username: targetKey, data: text.trim() });
-      await sendPlain(chatId, `✅  Custom TG data set!\n👤 Key: ${targetKey}`);
-    } else if (choice === "setcustomnum_step1" && _isAdmin) {
-      userState.set(from.id, `setcustomnum_step2::${text.trim().replace(/[+\s]/g,"").replace(/^91/,"")}`);
-      await sendPlain(chatId, `✅  Number: ${text.trim()}\n\n📥  Ab custom data bhejo:`);
-      return;
-    } else if (typeof choice === "string" && choice.startsWith("setcustomnum_step2::") && _isAdmin) {
-      const targetKey = choice.split("::")[1];
-      customNumData.set(targetKey, text.trim());
-      dbSaveData(`customnum:${targetKey}`, { number: targetKey, data: text.trim() });
-      await sendPlain(chatId, `✅  Custom Number data set!\n📱 Key: ${targetKey}`);
-    }
+    if not _is_admin:
+        return
 
-    userState.delete(from.id);
-  } catch (e) { console.error("[handleUpdate]", e.message); }
-}
+    if data == "menu_users":
+        c = db_user_count()
+        send_plain(chat_id, f"📊 Total Users: {c}\n🗄️ Source: File storage")
+        return
+    if data == "menu_dbbackup":
+        send_db_backup(chat_id)
+        return
+    if data == "menu_adminlist":
+        send_plain(chat_id, f"╔══════════════════╗\n║  📋 ADMIN LIST   ║\n╚══════════════════╝\n" + "\n".join(f"• {a}" for a in admins))
+        return
+    if data == "menu_broadcast":
+        user_state[from_data["id"]] = "broadcast"
+        send_plain(chat_id, "📢  Broadcast message type karo:")
+        return
+    if data == "menu_setcustomtg":
+        user_state[from_data["id"]] = "setcustomtg_step1"
+        send_plain(chat_id, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming")
+        return
+    if data == "menu_setcustomnum":
+        user_state[from_data["id"]] = "setcustomnum_step1"
+        send_plain(chat_id, "📥  Number bhejo jiska data set karna hai\n📌  Example: 9876543210")
+        return
+    if data == "menu_api":
+        edit_message_text(chat_id, msg_id, api_manager_text(), extra={"reply_markup": api_manager_kb()})
+        return
+    if data == "menu_adminpanel":
+        send_plain(chat_id,
+            "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n"
+            "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n"
+            "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚══════════════════════════╝")
+        return
 
-async function handleAdminText(chatId, userId, text) {
-  const lower = text.toLowerCase();
+# ── Message Router ───────────────────────────
+def handle_update(update):
+    try:
+        if "callback_query" in update:
+            queue_for_user(update["callback_query"]["from"]["id"], handle_callback, update["callback_query"])
+            return
 
-  if (lower === "/admin") {
-    await sendPlain(chatId,
-      "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
-      "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
-      "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n" +
-      "📋 /listcustom  🔌 /apimanager\n🔗 /apiurlmanager  📢 /channelmanager\n╚══════════════════════════╝"
-    );
-    return;
-  }
+        msg = update.get("message") or update.get("edited_message")
+        if not msg:
+            return
+        from_data = msg.get("from")
+        if not from_data or from_data.get("is_bot"):
+            return
+        chat_id = msg["chat"]["id"]
+        msg_id = msg.get("message_id")
+        text = (msg.get("text") or "").strip()
+        _is_admin = is_admin(from_data.get("username"))
 
-  if (lower === "/apimanager") {
-    await sendPlain(chatId, apiManagerText(), { reply_markup: apiManagerKb() });
-    return;
-  }
+        db_save_user(from_data)
+        if not text:
+            return
 
-  if (lower === "/apiurlmanager") {
-    await tgApi("sendMessage", {
-      chat_id: chatId,
-      text: apiUrlManagerText(),
-      parse_mode: "MarkdownV2",
-      disable_web_page_preview: true,
-      reply_markup: apiUrlManagerKb(),
-    });
-    return;
-  }
+        admin_cmds = ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin",
+                      "/setcustomtg","/delcustomtg","/setcustomnum","/delcustomnum","/listcustom","/dbbackup","/apimanager"]
+        if _is_admin and any(text.lower().startswith(cmd) for cmd in admin_cmds):
+            queue_for_user(from_data["id"], handle_admin_text, chat_id, from_data["id"], text)
+            return
 
-  if (lower === "/channelmanager") {
-    await tgApi("sendMessage", {
-      chat_id: chatId,
-      text: channelManagerText(),
-      parse_mode: "MarkdownV2",
-      reply_markup: channelManagerKb(),
-    });
-    return;
-  }
+        choice = user_state.get(from_data["id"])
+        if not choice:
+            return
 
-  if (lower.startsWith("/broadcast")) {
-    const msgText = text.slice("/broadcast".length).trim();
-    if (!msgText) { await sendPlain(chatId, "❌  Usage: /broadcast <message>"); return; }
-    const users = await dbGetAllUsers(); const uids = users.map(u => u.user_id);
-    const status = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
-    let ok = 0, fail = 0;
-    for (const uid of uids) { const r = await tgApi("sendMessage", { chat_id: uid, text: msgText }); r ? ok++ : fail++; await new Promise(r => setTimeout(r, 50)); }
-    await tgApi("editMessageText", { chat_id: chatId, message_id: status.message_id, text: `✅ Delivered: ${ok}\n❌ Failed: ${fail}\n👥 Total: ${uids.length}` });
-    return;
-  }
-  if (lower === "/users")    { const c = await dbUserCount(); await sendPlain(chatId, `📊  Total Users: ${c}\n🗄️ Source: MongoDB`); return; }
-  if (lower === "/dbbackup") { await sendDbBackup(chatId); return; }
-  if (lower.startsWith("/addadmin")) {
-    const parts = text.trim().split(/\s+/);
-    if (parts.length < 2) { await sendPlain(chatId, "❌  Usage: /addadmin @username"); return; }
-    const na = parts[1].startsWith("@") ? parts[1] : `@${parts[1]}`;
-    if (!admins.map(a=>a.toLowerCase()).includes(na.toLowerCase())) { admins.push(na); await sendPlain(chatId, `✅  ${na} ko admin bana diya!`); }
-    else { await sendPlain(chatId, `⚠️  ${na} pehle se admin hai.`); }
-    return;
-  }
-  if (lower.startsWith("/removeadmin")) {
-    const parts = text.trim().split(/\s+/);
-    if (parts.length < 2) { await sendPlain(chatId, "❌  Usage: /removeadmin @username"); return; }
-    const rem = parts[1].startsWith("@") ? parts[1] : `@${parts[1]}`;
-    const match = admins.find(a => a.toLowerCase() === rem.toLowerCase());
-    if (match && match.toLowerCase() !== "@rtfgamming") { admins = admins.filter(a => a.toLowerCase() !== rem.toLowerCase()); await sendPlain(chatId, `✅  ${rem} ko hata diya.`); }
-    else if (match) { await sendPlain(chatId, "❌  Owner ko remove nahi kar sakte!"); }
-    else { await sendPlain(chatId, `⚠️  ${rem} list me nahi hai.`); }
-    return;
-  }
-  if (lower === "/listadmins") { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST    ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
-  if (lower.startsWith("/setcustomtg")) {
-    const parts = text.trim().split(/\s+/, 3);
-    if (parts.length < 3) { await sendPlain(chatId, "❌  Usage: /setcustomtg @username <custom_text>"); return; }
-    const target = parts[1].replace(/^@/,"").toLowerCase();
-    const customText = text.trim().slice(parts[0].length + parts[1].length + 2).trim();
-    customTgData.set(target, customText);
-    dbSaveData(`customtg:${target}`, { username: target, data: customText });
-    await sendPlain(chatId, `✅  Custom TG data set!\n👤 Key: ${target}`);
-    return;
-  }
-  if (lower.startsWith("/delcustomtg")) {
-    const parts = text.trim().split(/\s+/);
-    if (parts.length < 2) { await sendPlain(chatId, "❌  Usage: /delcustomtg @username"); return; }
-    const target = parts[1].replace(/^@/,"").toLowerCase();
-    if (customTgData.has(target)) { customTgData.delete(target); await sendPlain(chatId, `✅  ${target} ka custom TG data delete ho gaya.`); }
-    else { await sendPlain(chatId, `⚠️  ${target} ka koi custom TG data nahi mila.`); }
-    return;
-  }
-  if (lower.startsWith("/setcustomnum")) {
-    const parts = text.trim().split(/\s+/, 3);
-    if (parts.length < 3) { await sendPlain(chatId, "❌  Usage: /setcustomnum <number> <custom_text>"); return; }
-    const target = parts[1].replace(/[+\s]/g,"").replace(/^91/,"");
-    const customText = text.trim().slice(parts[0].length + parts[1].length + 2).trim();
-    customNumData.set(target, customText);
-    dbSaveData(`customnum:${target}`, { number: target, data: customText });
-    await sendPlain(chatId, `✅  Custom Number data set!\n📱 Key: ${target}`);
-    return;
-  }
-  if (lower.startsWith("/delcustomnum")) {
-    const parts = text.trim().split(/\s+/);
-    if (parts.length < 2) { await sendPlain(chatId, "❌  Usage: /delcustomnum <number>"); return; }
-    const target = parts[1].replace(/[+\s]/g,"").replace(/^91/,"");
-    if (customNumData.has(target)) { customNumData.delete(target); await sendPlain(chatId, `✅  ${target} ka custom Number data delete ho gaya.`); }
-    else { await sendPlain(chatId, `⚠️  ${target} ka koi custom Number data nahi mila.`); }
-    return;
-  }
-  if (lower === "/listcustom") {
-    let output = "╔══════════════════════════╗\n║  📋  CUSTOM DATA LIST    ║\n╠══════════════════════════╣\n\n";
-    output += "🔹 CUSTOM TG DATA:\n";
-    if (customTgData.size) { for (const [k,v] of customTgData) output += `  👤 ${k}\n     📝 ${v.slice(0,50)}${v.length>50?"...":""}\n`; }
-    else { output += "  ❌ Koi custom TG data nahi\n"; }
-    output += "\n🔹 CUSTOM NUMBER DATA:\n";
-    if (customNumData.size) { for (const [k,v] of customNumData) output += `  📱 ${k}\n     📝 ${v.slice(0,50)}${v.length>50?"...":""}\n`; }
-    else { output += "  ❌ Koi custom Number data nahi\n"; }
-    output += "╚══════════════════════════╝";
-    await sendPlain(chatId, output);
-    return;
-  }
-}
+        if not _is_admin and not check_join(from_data["id"]):
+            send_join_prompt(chat_id)
+            return
 
-async function handleCommand(msg) {
-  const from   = msg.from;
-  if (!from || from.is_bot) return;
-  const chatId = msg.chat.id;
-  const msgId  = msg.message_id;
-  const text   = (msg.text || "").trim();
-  const _isAdm = isAdmin(from.username);
+        # API off-message setter
+        if isinstance(choice, str) and choice.startswith("api_offmsg::") and _is_admin:
+            key = choice.split("::")[1]
+            if text.lower() == "cancel":
+                user_state.pop(from_data["id"], None)
+                send_plain(chat_id, "❌  Cancel ho gaya.")
+                return
+            if key in api_toggle:
+                api_toggle[key]["offMsg"] = text.strip()
+                send_plain(chat_id, f'✅  {api_toggle[key]["label"]} ka off message set ho gaya!\n\n"{text.strip()}"')
+            user_state.pop(from_data["id"], None)
+            return
 
-  dbSaveUser(from);
-  if (!_isAdm && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
+        if choice == "broadcast" and _is_admin:
+            users = db_get_all_users()
+            uids = [u["user_id"] for u in users]
+            status = send_plain(chat_id, f"📤  Broadcasting to {len(uids)} users...")
+            ok = 0
+            fail = 0
+            for uid in uids:
+                r = tg_request("sendMessage", {"chat_id": uid, "text": text})
+                if r:
+                    ok += 1
+                else:
+                    fail += 1
+                time.sleep(0.05)
+            if status:
+                edit_message_text(chat_id, status["message_id"],
+                    f"╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n✅  Delivered : {ok}\n❌  Failed    : {fail}\n👥  Total     : {len(uids)}")
+            return
 
-  const match = text.match(/^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?/);
-  if (!match) return;
-  const [, cmd, args = ""] = match;
+        if choice == "number":
+            handle_number(chat_id, text, msg_id, from_data["id"])
+        elif choice == "tg":
+            handle_tg(chat_id, text, msg_id, from_data["id"])
+        elif choice == "adhar":
+            handle_adhar(chat_id, text, msg_id, from_data["id"])
+        elif choice == "upi":
+            handle_upi(chat_id, text, msg_id, from_data["id"])
+        elif choice == "vehicle":
+            handle_vehicle(chat_id, text, msg_id, from_data["id"])
+        elif choice == "setcustomtg_step1" and _is_admin:
+            user_state[from_data["id"]] = f"setcustomtg_step2::{text.strip().lstrip('@').lower()}"
+            send_plain(chat_id, f"✅  Username: {text.strip()}\n\n📥  Ab custom data bhejo:")
+            return
+        elif isinstance(choice, str) and choice.startswith("setcustomtg_step2::") and _is_admin:
+            target_key = choice.split("::")[1]
+            custom_tg_data[target_key] = text.strip()
+            db_save_data(f"customtg:{target_key}", {"username": target_key, "data": text.strip()})
+            send_plain(chat_id, f"✅  Custom TG data set!\n👤 Key: {target_key}")
+        elif choice == "setcustomnum_step1" and _is_admin:
+            user_state[from_data["id"]] = f"setcustomnum_step2::{text.strip().lower()}"
+            send_plain(chat_id, f"✅  Number: {text.strip()}\n\n📥  Ab custom data bhejo:")
+            return
+        elif isinstance(choice, str) and choice.startswith("setcustomnum_step2::") and _is_admin:
+            target_key = choice.split("::")[1]
+            custom_num_data[target_key] = text.strip()
+            db_save_data(f"customnum:{target_key}", {"number": target_key, "data": text.strip()})
+            send_plain(chat_id, f"✅  Custom Number data set!\n📱 Key: {target_key}")
 
-  if      (cmd === "start")   { await tgApi("sendMessage", { chat_id: chatId, text: MAIN_MENU_TEXT, reply_markup: _isAdm ? adminMenuKb() : mainMenuKb() }); }
-  else if (cmd === "help")    { await sendPlain(chatId, HELP_TEXT); }
-  else if (cmd === "num")     { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /num <number>"); return; } await handleNumber(chatId, args.trim(), msgId, from.id); }
-  else if (cmd === "tg")      { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /tg <username ya userid>"); return; } await handleTg(chatId, args.trim(), msgId, from.id); }
-  else if (cmd === "adhar")   { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /adhar <aadhaar_number>"); return; } await handleAdhar(chatId, args.trim(), msgId, from.id); }
-  else if (cmd === "upi")     { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /upi <upi_id>"); return; } await handleUpi(chatId, args.trim(), msgId, from.id); }
-  else if (cmd === "vehicle") { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /vehicle <reg_number>"); return; } await handleVehicle(chatId, args.trim(), msgId, from.id); }
-  else if (_isAdm)            { await handleAdminText(chatId, from.id, text); }
-}
+        user_state.pop(from_data["id"], None)
+    except Exception as e:
+        logger.error(f"handle_update error: {e}")
 
-// ── WEBHOOK ───────────────────────────────────
-app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
-  res.sendStatus(200);
-  const update = req.body;
-  if (!update) return;
-  if (update.callback_query) { queueForUser(update.callback_query.from.id, () => handleCallback(update.callback_query)); return; }
-  const msg = update.message || update.edited_message;
-  if (!msg || !msg.from) return;
-  const uid  = msg.from.id;
-  const text = (msg.text || "").trim();
-  if (text.startsWith("/")) { queueForUser(uid, () => handleCommand(msg)); }
-  else                      { queueForUser(uid, () => handleUpdate(update)); }
-});
+def handle_admin_text(chat_id, user_id, text):
+    lower = text.lower()
+    if lower == "/admin":
+        send_plain(chat_id,
+            "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n"
+            "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n"
+            "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n╚══════════════════════════╝")
+        return
+    if lower == "/apimanager":
+        send_plain(chat_id, api_manager_text(), extra={"reply_markup": api_manager_kb()})
+        return
+    if lower.startswith("/broadcast"):
+        msg_text = text[len("/broadcast"):].strip()
+        if not msg_text:
+            send_plain(chat_id, "❌  Usage: /broadcast <message>")
+            return
+        users = db_get_all_users()
+        uids = [u["user_id"] for u in users]
+        status = send_plain(chat_id, f"📤  Broadcasting to {len(uids)} users...")
+        ok, fail = 0, 0
+        for uid in uids:
+            r = tg_request("sendMessage", {"chat_id": uid, "text": msg_text})
+            if r:
+                ok += 1
+            else:
+                fail += 1
+            time.sleep(0.05)
+        if status:
+            edit_message_text(chat_id, status["message_id"],
+                f"✅ Delivered: {ok}\n❌ Failed: {fail}\n👥 Total: {len(uids)}")
+        return
+    if lower == "/users":
+        c = db_user_count()
+        send_plain(chat_id, f"📊  Total Users: {c}\n🗄️ Source: File storage")
+        return
+    if lower == "/dbbackup":
+        send_db_backup(chat_id)
+        return
+    if lower.startswith("/addadmin"):
+        parts = text.strip().split()
+        if len(parts) < 2:
+            send_plain(chat_id, "❌  Usage: /addadmin @username")
+            return
+        na = parts[1] if parts[1].startswith("@") else f"@{parts[1]}"
+        if na.lower() not in [a.lower() for a in admins]:
+            admins.append(na)
+            send_plain(chat_id, f"✅  {na} ko admin bana diya!")
+        else:
+            send_plain(chat_id, f"⚠️  {na} pehle se admin hai.")
+        return
+    if lower.startswith("/removeadmin"):
+        parts = text.strip().split()
+        if len(parts) < 2:
+            send_plain(chat_id, "❌  Usage: /removeadmin @username")
+            return
+        rem = parts[1] if parts[1].startswith("@") else f"@{parts[1]}"
+        match = next((a for a in admins if a.lower() == rem.lower()), None)
+        if match and match.lower() != "@rtfgamming":
+            admins = [a for a in admins if a.lower() != rem.lower()]
+            send_plain(chat_id, f"✅  {rem} ko hata diya.")
+        elif match:
+            send_plain(chat_id, "❌  Owner ko remove nahi kar sakte!")
+        else:
+            send_plain(chat_id, f"⚠️  {rem} list me nahi hai.")
+        return
+    if lower == "/listadmins":
+        send_plain(chat_id, f"╔══════════════════╗\n║  📋 ADMIN LIST    ║\n╚══════════════════╝\n" + "\n".join(f"• {a}" for a in admins))
+        return
+    if lower.startswith("/setcustomtg"):
+        parts = text.strip().split(None, 2)
+        if len(parts) < 3:
+            send_plain(chat_id, "❌  Usage: /setcustomtg @username <custom_text>")
+            return
+        target = parts[1].lstrip("@").lower()
+        custom_text = parts[2]
+        custom_tg_data[target] = custom_text
+        db_save_data(f"customtg:{target}", {"username": target, "data": custom_text})
+        send_plain(chat_id, f"✅  Custom TG data set!\n👤 Key: {target}")
+        return
+    if lower.startswith("/delcustomtg"):
+        parts = text.strip().split()
+        if len(parts) < 2:
+            send_plain(chat_id, "❌  Usage: /delcustomtg @username")
+            return
+        target = parts[1].lstrip("@").lower()
+        if target in custom_tg_data:
+            del custom_tg_data[target]
+            send_plain(chat_id, f"✅  {target} ka custom TG data delete ho gaya.")
+        else:
+            send_plain(chat_id, f"⚠️  {target} ka koi custom TG data nahi mila.")
+        return
+    if lower.startswith("/setcustomnum"):
+        parts = text.strip().split(None, 2)
+        if len(parts) < 3:
+            send_plain(chat_id, "❌  Usage: /setcustomnum <number> <custom_text>")
+            return
+        target = parts[1].lower()
+        custom_text = parts[2]
+        custom_num_data[target] = custom_text
+        db_save_data(f"customnum:{target}", {"number": target, "data": custom_text})
+        send_plain(chat_id, f"✅  Custom Number data set!\n📱 Key: {target}")
+        return
+    if lower.startswith("/delcustomnum"):
+        parts = text.strip().split()
+        if len(parts) < 2:
+            send_plain(chat_id, "❌  Usage: /delcustomnum <number>")
+            return
+        target = parts[1].lower()
+        if target in custom_num_data:
+            del custom_num_data[target]
+            send_plain(chat_id, f"✅  {target} ka custom Number data delete ho gaya.")
+        else:
+            send_plain(chat_id, f"⚠️  {target} ka koi custom Number data nahi mila.")
+        return
+    if lower == "/listcustom":
+        output = "╔══════════════════════════╗\n║  📋  CUSTOM DATA LIST   ║\n╠══════════════════════════╣\n\n"
+        output += "🔹 CUSTOM TG DATA:\n"
+        if custom_tg_data:
+            for k, v in custom_tg_data.items():
+                output += f"  👤 {k}\n     📝 {v[:50]}{'...' if len(v) > 50 else ''}\n"
+        else:
+            output += "  ❌ Koi custom TG data nahi\n"
+        output += "\n🔹 CUSTOM NUMBER DATA:\n"
+        if custom_num_data:
+            for k, v in custom_num_data.items():
+                output += f"  📱 {k}\n     📝 {v[:50]}{'...' if len(v) > 50 else ''}\n"
+        else:
+            output += "  ❌ Koi custom Number data nahi\n"
+        output += "╚══════════════════════════╝"
+        send_plain(chat_id, output)
+        return
 
-app.get("/", (_req, res) => res.send("RTF Bot is running ✅"));
+def handle_command(msg):
+    from_data = msg["from"]
+    if not from_data or from_data.get("is_bot"):
+        return
+    chat_id = msg["chat"]["id"]
+    msg_id = msg.get("message_id")
+    text = (msg.get("text") or "").strip()
+    _is_adm = is_admin(from_data.get("username"))
 
-async function start() {
-  if (!BOT_TOKEN) { console.error("[BOT] BOT_TOKEN not set! Exiting."); process.exit(1); }
-  await initDb();
-  await dbLoadChannels();
-  await dbLoadApiUrls();
-  await setMyCommands([
-    { command: "start",          description: "🏠 Main Menu" },
-    { command: "num",            description: "📞 Number Lookup" },
-    { command: "tg",             description: "🔎 TG Username / UserID" },
-    { command: "adhar",          description: "🪪 Aadhaar Lookup" },
-    { command: "upi",            description: "💳 UPI ID Lookup" },
-    { command: "vehicle",        description: "🚗 Vehicle Lookup" },
-    { command: "help",           description: "❓ Help Guide" },
-    { command: "apiurlmanager",  description: "🔗 API URL Manager (Admin)" },
-    { command: "channelmanager", description: "📢 Channel Manager (Admin)" },
-  ]);
-  if (WEBHOOK_URL) {
-    const wh = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
-    await setWebhook(wh);
-    console.log(`[BOT] Webhook set → ${wh}`);
-  } else { console.warn("[BOT] WEBHOOK_URL not set"); }
-  app.listen(PORT, () => console.log(`[BOT] Server listening on port ${PORT} ✅`));
-}
+    db_save_user(from_data)
 
-start();
+    # --- START FIX: robust join check ---
+    if not _is_adm:
+        try:
+            if not check_join(from_data["id"]):
+                send_join_prompt(chat_id)
+                return
+        except Exception as e:
+            logger.error(f"Join check error in handle_command: {e}")
+            # fall through to command handling
+    # --- END FIX ---
+
+    match = re.match(r"^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?", text)
+    if not match:
+        return
+    cmd = match.group(1)
+    args = (match.group(2) or "").strip()
+
+    if cmd == "start":
+        # Additional per‑command check with try/except to ensure reply
+        try:
+            if not _is_adm and not check_join(from_data["id"]):
+                send_join_prompt(chat_id)
+                return
+        except Exception as e:
+            logger.error(f"Start command join check error: {e}")
+            # proceed to show menu anyway
+        kb = admin_menu_kb() if _is_adm else main_menu_kb()
+        send_message(chat_id, MAIN_MENU_TEXT, extra={"reply_markup": kb})
+    elif cmd == "help":
+        send_plain(chat_id, HELP_TEXT)
+    elif cmd == "num":
+        if not args:
+            send_plain(chat_id, "❌  Usage: /num <number>")
+            return
+        handle_number(chat_id, args, msg_id, from_data["id"])
+    elif cmd == "tg":
+        if not args:
+            send_plain(chat_id, "❌  Usage: /tg <username ya userid>")
+            return
+        handle_tg(chat_id, args, msg_id, from_data["id"])
+    elif cmd == "adhar":
+        if not args:
+            send_plain(chat_id, "❌  Usage: /adhar <aadhaar_number>")
+            return
+        handle_adhar(chat_id, args, msg_id, from_data["id"])
+    elif cmd == "upi":
+        if not args:
+            send_plain(chat_id, "❌  Usage: /upi <upi_id>")
+            return
+        handle_upi(chat_id, args, msg_id, from_data["id"])
+    elif cmd == "vehicle":
+        if not args:
+            send_plain(chat_id, "❌  Usage: /vehicle <reg_number>")
+            return
+        handle_vehicle(chat_id, args, msg_id, from_data["id"])
+    elif _is_adm:
+        handle_admin_text(chat_id, from_data["id"], text)
+
+# ── Polling Loop ─────────────────────────────
+def run_polling():
+    load_databases()
+    set_my_commands([
+        {"command": "start", "description": "🏠 Main Menu"},
+        {"command": "num", "description": "📞 Number Lookup"},
+        {"command": "tg", "description": "🔎 TG Username / UserID"},
+        {"command": "adhar", "description": "🪪 Aadhaar Lookup"},
+        {"command": "upi", "description": "💳 UPI ID Lookup"},
+        {"command": "vehicle", "description": "🚗 Vehicle Lookup"},
+        {"command": "help", "description": "❓ Help Guide"},
+    ])
+
+    delete_webhook()
+    logger.info("Webhook cleared (if any).")
+
+    logger.info("Bot started in polling mode. Waiting for updates...")
+    offset = 0
+    while True:
+        try:
+            updates = get_updates(offset=offset, timeout=30)
+            if updates:
+                for update in updates:
+                    offset = update["update_id"] + 1
+                    process_update(update)
+                # if we got updates, reset any backoff
+            # small sleep to avoid busy loop when no updates
+            time.sleep(0.5)
+        except Exception as e:
+            # Timeouts and other errors are already logged by tg_request, so just wait and retry
+            logger.debug(f"Polling loop error: {e}")
+            # Sleep a bit before retrying to avoid flooding logs
+            time.sleep(2)
+
+def process_update(update):
+    try:
+        if "callback_query" in update:
+            cb = update["callback_query"]
+            queue_for_user(cb["from"]["id"], handle_callback, cb)
+        elif "message" in update or "edited_message" in update:
+            msg = update.get("message") or update.get("edited_message")
+            if msg and msg.get("from") and not msg["from"].get("is_bot"):
+                text = (msg.get("text") or "").strip()
+                if text.startswith("/"):
+                    queue_for_user(msg["from"]["id"], handle_command, msg)
+                else:
+                    queue_for_user(msg["from"]["id"], handle_update, update)
+    except Exception as e:
+        logger.error(f"process_update error: {e}")
+
+if __name__ == "__main__":
+    run_polling()
