@@ -21,7 +21,7 @@ const OWNER       = "@RTFGAMMING";
 const DEFAULT_API_URLS = {
   num:     "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={query}&key=mysecretkey123",
   deep:    "https://rootx-osint.in/?type=num&key=RootXIndia&query={query}",
-  tg:      "https://rootx-osint.in/?type=tg_num&key=Jack_The_Dack&query={query}",
+  tg:      "https://username2num.suryajasoos.workers.dev/?id={query}",  // <-- updated example
   adhar:   "https://aadhar-to-family-impds-info-api.onrender.com/search-aadhaar?search=A&aadhaar={query}",
   upi:     "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={query}",
   vehicle: "https://vehicle.suryahacker.workers.dev/fetch?query={query}",
@@ -717,12 +717,11 @@ function formatVehicleResult(data) {
 }
 
 // ══════════════════════════════════════════════
-//  CUSTOM RESPONSE FORMATTER
-//  apiResponseConfig[key] = "raw" | "field:fieldname"
+//  CUSTOM RESPONSE FORMATTER (FIXED — handles objects)
 // ══════════════════════════════════════════════
 function applyResponseConfig(key, rawData, query) {
   const cfg = apiResponseConfig[key] || "raw";
-  if (cfg === "raw") return null; // caller uses default formatter
+  if (cfg === "raw") return null;
   if (cfg.startsWith("field:")) {
     const fieldName = cfg.replace("field:", "");
     let value = null;
@@ -733,17 +732,32 @@ function applyResponseConfig(key, rawData, query) {
         if (cur && typeof cur === "object") cur = cur[p];
         else { cur = null; break; }
       }
-      if (cur != null) value = String(cur).trim();
+      if (cur != null) {
+        // If extracted value is an object or array, stringify it prettily
+        if (typeof cur === "object") {
+          value = JSON.stringify(cur, null, 2);
+        } else {
+          value = String(cur).trim();
+        }
+      }
     } else if (typeof rawData === "string") {
       value = rawData.trim();
     }
     if (!value || ["null","undefined","None","N/A",""].includes(value)) {
       return null;
     }
+    // If it's JSON, show in code block
+    const isJson = value.startsWith("{") || value.startsWith("[");
+    let resultText;
+    if (isJson) {
+      resultText = `\`\`\`json\n${value}\n\`\`\``;
+    } else {
+      resultText = `\`${escMd(value)}\``;
+    }
     return (
       `┌─────────────────────────┐\n│  📋  RESULT              │\n├─────────────────────────┤\n` +
       `🔍  Query  : \`${escMd(query)}\`\n` +
-      `📄  Result : \`${escMd(value)}\`\n` +
+      `📄  Result :\n${resultText}\n` +
       `└─────────────────────────┘\n` +
       `👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`
     );
@@ -928,6 +942,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
     const rawData = await apiFetch(buildUrl("tg", term), 30000);
     deleteMessage(chatId, statusMsg.message_id);
 
+    // Check custom response config
     const customFmt = applyResponseConfig("tg", rawData, term);
     if (customFmt) {
       if (userId) dbIncrSearch(userId);
@@ -935,6 +950,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       return;
     }
 
+    // Default TG processing (if not custom)
     if (!rawData || rawData.success === false) {
       await sendDataNotFound(chatId, userMsgId,
         `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
