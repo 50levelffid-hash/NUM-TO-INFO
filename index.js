@@ -30,6 +30,19 @@ const DEFAULT_API_URLS = {
 // Runtime mein yahi use hoga (DB se override hoga)
 let apiUrls = { ...DEFAULT_API_URLS };
 
+// API response display config — kaunsa field user ko dikhana hai
+// "raw" = pura response dikhao (default formatters use karo)
+// "field:xyz" = response ka xyz field dikhao
+const DEFAULT_API_RESPONSE_CONFIG = {
+  num:     "raw",
+  deep:    "raw",
+  tg:      "raw",
+  adhar:   "raw",
+  upi:     "raw",
+  vehicle: "raw",
+};
+let apiResponseConfig = { ...DEFAULT_API_RESPONSE_CONFIG };
+
 // ── CHANNELS (dynamic, DB se load hoga) ───────
 let CHANNELS = [
   { name: "🔥 RTF GAMING",  username: "RTFGAMING1",     id: null },
@@ -56,7 +69,6 @@ const apiToggle = {
   vehicle: { enabled: true, label: "🚗 Vehicle API",    offMsg: "❌ Vehicle lookup abhi available nahi hai." },
 };
 
-// API keys with their display names
 const API_KEYS = ["num","deep","tg","adhar","upi","vehicle"];
 const API_LABELS = {
   num:     "📞 Number API",
@@ -119,7 +131,16 @@ async function dbLoadChannels() {
 async function dbSaveApiUrls() {
   if (!dataCol) return;
   try {
-    await dataCol.updateOne({ key: "api_urls" }, { $set: { key: "api_urls", value: apiUrls, updated_at: new Date().toISOString() } }, { upsert: true });
+    await dataCol.updateOne(
+      { key: "api_urls" },
+      { $set: { key: "api_urls", value: apiUrls, updated_at: new Date().toISOString() } },
+      { upsert: true }
+    );
+    await dataCol.updateOne(
+      { key: "api_response_config" },
+      { $set: { key: "api_response_config", value: apiResponseConfig, updated_at: new Date().toISOString() } },
+      { upsert: true }
+    );
   } catch (e) { console.error("[DB SAVE API URLS]", e.message); }
 }
 
@@ -130,6 +151,11 @@ async function dbLoadApiUrls() {
     if (doc && doc.value && typeof doc.value === "object") {
       apiUrls = { ...DEFAULT_API_URLS, ...doc.value };
       console.log("[DB] Loaded API URLs ✅");
+    }
+    const cfgDoc = await dataCol.findOne({ key: "api_response_config" });
+    if (cfgDoc && cfgDoc.value && typeof cfgDoc.value === "object") {
+      apiResponseConfig = { ...DEFAULT_API_RESPONSE_CONFIG, ...cfgDoc.value };
+      console.log("[DB] Loaded API response config ✅");
     }
   } catch (e) { console.error("[DB LOAD API URLS]", e.message); }
 }
@@ -191,7 +217,7 @@ async function tgApi(method, body = {}) {
 
 function escMd(text) {
   if (text == null) return "";
-  return String(text).replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");
+  return String(text).replace(/[_*[\]()~`>#+=|{}.!\\\-]/g, "\\$&");
 }
 function cbMd(label, value) {
   const v = (value != null ? String(value).trim() : "");
@@ -221,7 +247,7 @@ async function sendDataFound(chatId, userMsgId, text) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
   const res = await sendMessage(chatId, text, extra);
   if (!res) {
-    const plain = text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "");
+    const plain = text.replace(/[_*[\]()~`>#+=|{}.!\\\-]/g, "");
     await sendPlain(chatId, plain, extra);
   }
   return res;
@@ -321,20 +347,24 @@ function adminMenuKb() {
 }
 
 // ══════════════════════════════════════════════
-//  API URL MANAGER
+//  API URL MANAGER — TEXT + KEYBOARD
 // ══════════════════════════════════════════════
 
 function apiUrlManagerText() {
-  let text = "╔══════════════════════════╗\n║  🔗  API URL MANAGER     ║\n╠══════════════════════════╣\n\n";
+  let text = "🔗 *API URL MANAGER*\n";
+  text += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
   for (const k of API_KEYS) {
     const url = apiUrls[k] || DEFAULT_API_URLS[k];
     const isDefault = url === DEFAULT_API_URLS[k];
-    text += `${API_LABELS[k]}\n`;
-    text += `${isDefault ? "🟢 Default" : "🔵 Custom"}\n`;
-    const shortUrl = url.length > 45 ? url.slice(0, 45) + "..." : url;
-    text += `🔗 \`${shortUrl}\`\n\n`;
+    const cfg = apiResponseConfig[k] || "raw";
+    const cfgLabel = cfg === "raw" ? "🟢 Default Format" : `🔵 Custom Field: \`${escMd(cfg.replace("field:", ""))}\``;
+    text += `*${escMd(API_LABELS[k])}*\n`;
+    text += `Status: ${isDefault ? "🟢 Default URL" : "🔵 Custom URL"}\n`;
+    text += `Response: ${cfgLabel}\n`;
+    const shortUrl = url.length > 50 ? url.slice(0, 50) + "..." : url;
+    text += `URL: \`${escMd(shortUrl)}\`\n\n`;
   }
-  text += "✏️ = URL change karo  |  🔄 = Default reset\n╚══════════════════════════╝";
+  text += "_✏️ = URL change  |  🔄 = Default reset_";
   return text;
 }
 
@@ -447,7 +477,6 @@ function formatNumResult(records, number) {
   return out;
 }
 
-// ── DEEP API (rootx-osint.in ?type=num) ──────
 function parseDeepApiResponse(data) {
   try {
     let arr = Array.isArray(data) ? data : (data && Array.isArray(data.result) ? data.result : null);
@@ -494,7 +523,6 @@ function formatDeepResult(records, queryNumber) {
   return text;
 }
 
-// ── AADHAAR FORMAT ────────────────────────────
 function formatAdharResult(data, adharNumber) {
   try {
     if (!data || !data.success || !Array.isArray(data.results) || !data.results.length) return null;
@@ -502,11 +530,9 @@ function formatAdharResult(data, adharNumber) {
     const rc      = result.ration_card_details || {};
     const addInfo = result.additional_info     || {};
     const members = result.members             || [];
-
     let out =
       `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
       `🔢  Aadhaar : \`${escMd(adharNumber)}\`\n\n`;
-
     if (Object.keys(rc).length) {
       out += `📋━━━ RATION CARD ━━━📋\n`;
       if (rc.ration_card_no) out += `${cbMd("🆔 RC Number  ", rc.ration_card_no)}\n`;
@@ -515,7 +541,6 @@ function formatAdharResult(data, adharNumber) {
       if (rc.district_name)  out += `${cbMd("📍 District   ", rc.district_name)}\n`;
       out += "\n";
     }
-
     const impds   = addInfo.impds_transaction_allowed;
     const central = addInfo.exists_in_central_repository;
     const fpsType = addInfo.fps_category;
@@ -526,7 +551,6 @@ function formatAdharResult(data, adharNumber) {
       if (fpsType)                out += `🏪 FPS Category   : \`${escMd(fpsType)}\`\n`;
       out += "\n";
     }
-
     if (members.length) {
       out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
       const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"];
@@ -539,13 +563,11 @@ function formatAdharResult(data, adharNumber) {
         out += "\n";
       });
     }
-
     out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
     return out;
   } catch (e) { console.error("[formatAdhar]", e.message); return null; }
 }
 
-// ── UPI FORMAT ────────────────────────────────
 function formatUpiResult(data, upiId) {
   const val = v => { const s = String(v||"").trim(); return s && !["None","null","nan","false","False",""].includes(s) ? s : null; };
   const tick = v => v ? "✅" : "❌";
@@ -586,38 +608,28 @@ function formatUpiResult(data, upiId) {
   return lines.join("\n");
 }
 
-// ── UPDATED VEHICLE FORMAT (includes all important fields) ──
 function formatVehicleResult(data) {
   const v = val => {
     const s = String(val||"").trim();
     return s && !["None","null","","nan","0","false","False","Not Available","undefined"].includes(s) ? s : null;
   };
   const tick = val => val ? "✅" : "❌";
-
   const vd         = (typeof data.vehicle_data === "object" && data.vehicle_data) || {};
   const rtoData    = (typeof vd.rtoData === "object" && vd.rtoData) || {};
-
-  // Top-level fields
   const regNo      = v(data.vehicle_number) || v(vd.regNo);
   const engNum     = v(data.engine_number)  || v(vd.engine);
   const chassisNum = v(data.chassis_number) || v(vd.chassis);
   const mobile     = v(data.mobile_number);
   const last5      = v(data.last_5_chassis);
-
-  // RTO
   const rtoName    = v(rtoData.rtoName);
   const rtoCode    = v(rtoData.rtoCode) || v(vd.rtoCode);
   const stateName  = v(rtoData.statename);
   const regAuth    = v(vd.regAuthority);
   const regDate    = v(vd.regDate);
-
-  // Owner
   const owner      = v(vd.owner);
   const fatherName = v(vd.ownerFatherName);
   const pincode    = v(vd.pincode);
   const address    = v(vd.presentAddress) || v(vd.permAddress);
-
-  // Vehicle specs
   const mfr        = v(vd.manufacturer);
   const model      = v(vd.vehicle);
   const variant    = v(vd.variant);
@@ -625,12 +637,9 @@ function formatVehicleResult(data) {
   const vehClass   = v(vd.vehicleClass);
   const vehType    = v(vd.vehicleType);
   const mfrYear    = v(vd.manufacturerYear);
-  const mfrMY      = v(vd.manufacturerMonthYear);
   const cc         = v(vd.cubicCapacity);
   const seats      = v(vd.seatCapacity);
   const isComm     = vd.isCommercial;
-
-  // Finance & Insurance
   const financer   = v(vd.financerName);
   const insComp    = v(vd.insuranceCompanyName);
   const insPolicy  = v(vd.insurancePolicyNumber);
@@ -638,28 +647,18 @@ function formatVehicleResult(data) {
   const insExpired = vd.insuranceExpired;
   const puccValid  = v(vd.puccValidUpto);
   const puccNo     = v(vd.puccNumber);
-
-  // Additional fields (newly added)
   const vehicleAge = v(vd.vehicleAge);
   const status     = v(vd.statusDesc) || v(vd.status);
   const transKey   = v(vd.transKey);
   const eDate      = v(vd.eDate);
   const lmDate     = v(vd.lmDate);
-
-  const lines = [
-    "┌────────────────────────────┐",
-    "│  🚗  VEHICLE INFO           │",
-    "└────────────────────────────┘",
-    "🔷━━━ REGISTRATION ━━━🔷",
-  ];
-
+  const lines = ["┌────────────────────────────┐","│  🚗  VEHICLE INFO           │","└────────────────────────────┘","🔷━━━ REGISTRATION ━━━🔷"];
   if (regNo)   lines.push(`🚘  Reg No       : \`${escMd(regNo)}\``);
   if (regAuth) lines.push(`🏛️   Reg Auth     : \`${escMd(regAuth)}\``);
   if (regDate) lines.push(`📅  Reg Date     : \`${escMd(regDate)}\``);
   if (rtoCode) lines.push(`🗂️   RTO Code     : \`${escMd(rtoCode)}\``);
   if (rtoName) lines.push(`🏢  RTO Name     : \`${escMd(rtoName)}\``);
   if (stateName) lines.push(`🗺️   State        : \`${escMd(stateName)}\``);
-
   if ([owner, fatherName, mobile, address, pincode].some(Boolean)) {
     lines.push("\n🔶━━━ OWNER DETAILS ━━━🔶");
     if (owner)      lines.push(`👤  Owner        : \`${escMd(owner)}\``);
@@ -668,7 +667,6 @@ function formatVehicleResult(data) {
     if (address)    lines.push(`📍  Address      : \`${escMd(address)}\``);
     if (pincode)    lines.push(`📮  Pincode      : \`${escMd(pincode)}\``);
   }
-
   if ([mfr, model, variant, fuelType, vehClass, cc, seats, mfrYear, vehicleAge].some(Boolean)) {
     lines.push("\n🟢━━━ VEHICLE SPECS ━━━🟢");
     if (mfr)      lines.push(`🏭  Manufacturer : \`${escMd(mfr)}\``);
@@ -683,14 +681,12 @@ function formatVehicleResult(data) {
     if (seats)    lines.push(`💺  Seats        : \`${escMd(String(seats))}\``);
     if (isComm != null) lines.push(`🏪  Commercial   : ${tick(isComm)}`);
   }
-
   if ([engNum, chassisNum, last5].some(Boolean)) {
     lines.push("\n🔵━━━ TECHNICAL ━━━🔵");
     if (engNum)     lines.push(`🔧  Engine No    : \`${escMd(engNum)}\``);
     if (chassisNum) lines.push(`🔩  Chassis No   : \`${escMd(chassisNum)}\``);
     if (last5)      lines.push(`🔢  Last 5 Chass : \`${escMd(last5)}\``);
   }
-
   if ([financer, insComp, insPolicy, insUpto, puccValid, puccNo].some(Boolean)) {
     lines.push("\n🟣━━━ FINANCE & INSURANCE ━━━🟣");
     if (financer)  lines.push(`💰  Financer     : \`${escMd(financer)}\``);
@@ -700,8 +696,6 @@ function formatVehicleResult(data) {
     if (puccValid) lines.push(`🌿  PUCC Valid   : \`${escMd(puccValid)}\``);
     if (puccNo)    lines.push(`📋  PUCC No      : \`${escMd(puccNo)}\``);
   }
-
-  // Additional info: status, timestamps
   if (status || transKey || eDate || lmDate) {
     lines.push("\n📌━━━ ADDITIONAL INFO ━━━📌");
     if (status)    lines.push(`📊  Status       : \`${escMd(status)}\``);
@@ -709,13 +703,46 @@ function formatVehicleResult(data) {
     if (eDate)     lines.push(`📅  Entry Date   : \`${escMd(eDate)}\``);
     if (lmDate)    lines.push(`🔄  Last Modified: \`${escMd(lmDate)}\``);
   }
-
-  lines.push(
-    `\n┌────────────────────────────┐`,
-    `│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │`,
-    "└────────────────────────────┘"
-  );
+  lines.push(`\n┌────────────────────────────┐`,`│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │`,"└────────────────────────────┘");
   return lines.join("\n");
+}
+
+// ══════════════════════════════════════════════
+//  CUSTOM RESPONSE FORMATTER
+//  apiResponseConfig[key] = "raw" | "field:fieldname"
+// ══════════════════════════════════════════════
+function applyResponseConfig(key, rawData, query) {
+  const cfg = apiResponseConfig[key] || "raw";
+  if (cfg === "raw") return null; // caller uses default formatter
+  if (cfg.startsWith("field:")) {
+    const fieldName = cfg.replace("field:", "");
+    // Try to extract the field from the response
+    let value = null;
+    if (rawData && typeof rawData === "object") {
+      // Support nested dot-notation: "data.name"
+      const parts = fieldName.split(".");
+      let cur = rawData;
+      for (const p of parts) {
+        if (cur && typeof cur === "object") cur = cur[p];
+        else { cur = null; break; }
+      }
+      if (cur != null) value = String(cur).trim();
+    } else if (typeof rawData === "string") {
+      value = rawData.trim();
+    }
+    if (!value || ["null","undefined","None","N/A",""].includes(value)) {
+      return null; // fall back to default formatter
+    }
+    // Format as a simple result card
+    return (
+      `┌─────────────────────────┐\n│  📋  RESULT              │\n├─────────────────────────┤\n` +
+      `🔍  Query  : \`${escMd(query)}\`\n` +
+      `📄  Result : \`${escMd(value)}\`\n` +
+      `└─────────────────────────┘\n` +
+      `👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`
+    );
+  }
+  return null;
 }
 
 // ── DB BACKUP ─────────────────────────────────
@@ -770,10 +797,10 @@ async function apiFetch(url, timeout = 25000) {
       signal: AbortSignal.timeout(timeout),
       ...agentForExternal(url),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'close'
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "close"
       }
     });
     const text = await res.text();
@@ -784,7 +811,6 @@ async function apiFetch(url, timeout = 25000) {
   }
 }
 
-// Helper: {query} ko replace karo
 function buildUrl(key, query) {
   return (apiUrls[key] || DEFAULT_API_URLS[key]).replace("{query}", encodeURIComponent(query));
 }
@@ -859,7 +885,11 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
     }
     if (userId) dbIncrSearch(userId);
     let full = "";
-    if (records.length && apiToggle.num.enabled) full += formatNumResult(records, clean);
+    if (records.length && apiToggle.num.enabled) {
+      // Check custom response config for num
+      const customFmt = applyResponseConfig("num", { result: records }, clean);
+      full += customFmt || formatNumResult(records, clean);
+    }
     if (deepFmt) full += deepFmt;
     await sendDataFound(chatId, userMsgId, full);
   } catch (e) {
@@ -890,14 +920,37 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
   }
   const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
   try {
-    const result = await fetchTgApi(term);
+    const rawData = await apiFetch(buildUrl("tg", term), 30000);
     deleteMessage(chatId, statusMsg.message_id);
-    if (!result) {
+
+    // Check custom response config for tg
+    const customFmt = applyResponseConfig("tg", rawData, term);
+    if (customFmt) {
+      if (userId) dbIncrSearch(userId);
+      await sendDataFound(chatId, userMsgId, customFmt);
+      return;
+    }
+
+    // Default TG processing
+    if (!rawData || rawData.success === false) {
       await sendDataNotFound(chatId, userMsgId,
         `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
       );
       return;
     }
+    const phone = rawData.number ? String(rawData.number).trim() : null;
+    if (!phone || ["","N/A","null","None","undefined","0"].includes(phone)) {
+      await sendDataNotFound(chatId, userMsgId,
+        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
+      );
+      return;
+    }
+    const result = {
+      tgId:        String(rawData.tg_id        || "N/A").trim(),
+      phone:       phone,
+      country:     String(rawData.country      || "N/A").trim(),
+      countryCode: String(rawData.country_code || "N/A").trim(),
+    };
     if (userId) dbIncrSearch(userId);
     const isUserId = /^\d{5,}$/.test(term);
     let tgBlock =
@@ -941,6 +994,14 @@ async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
   try {
     const data = await apiFetch(buildUrl("adhar", adharRaw.trim()), 30000);
     deleteMessage(chatId, statusMsg.message_id);
+
+    const customFmt = applyResponseConfig("adhar", data, adharRaw);
+    if (customFmt) {
+      if (userId) dbIncrSearch(userId);
+      await sendDataFound(chatId, userMsgId, customFmt);
+      return;
+    }
+
     if (!data || !data.success || !data.results || !data.results.length) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: ${adharRaw}`);
       return;
@@ -962,6 +1023,14 @@ async function handleUpi(chatId, upiId, userMsgId = null, userId = null) {
   try {
     const data = await apiFetch(buildUrl("upi", upiId.trim()));
     deleteMessage(chatId, statusMsg.message_id);
+
+    const customFmt = applyResponseConfig("upi", data, upiId);
+    if (customFmt) {
+      if (userId) dbIncrSearch(userId);
+      await sendDataFound(chatId, userMsgId, customFmt);
+      return;
+    }
+
     if (!data.success) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: ${upiId}`); return; }
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, formatUpiResult(data, upiId));
@@ -975,6 +1044,14 @@ async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null)
   try {
     const data = await apiFetch(buildUrl("vehicle", vehicleNo), 25000);
     deleteMessage(chatId, statusMsg.message_id);
+
+    const customFmt = applyResponseConfig("vehicle", data, vehicleNo);
+    if (customFmt) {
+      if (userId) dbIncrSearch(userId);
+      await sendDataFound(chatId, userMsgId, customFmt);
+      return;
+    }
+
     if (!data || !data.success) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════════╗\n║  ❌ VEHICLE NOT FOUND  ║\n╚══════════════════════╝\n🚗  Vehicle: ${vehicleNo}`);
       return;
@@ -985,7 +1062,7 @@ async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null)
 }
 
 // ══════════════════════════════════════════════
-//  CHANNEL ADD FLOW HANDLER (FIXED)
+//  CHANNEL ADD FLOW HANDLER
 // ══════════════════════════════════════════════
 async function handleChannelAddFlow(chatId, from, text, choice) {
   if (choice === "ch_add_step1") {
@@ -1044,7 +1121,9 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
   }
 }
 
-// ── CALLBACKS ─────────────────────────────────
+// ══════════════════════════════════════════════
+//  CALLBACKS — FIXED
+// ══════════════════════════════════════════════
 async function handleCallback(cb) {
   const from     = cb.from;
   const chatId   = cb.message.chat.id;
@@ -1052,6 +1131,7 @@ async function handleCallback(cb) {
   const data     = cb.data;
   const _isAdmin = isAdmin(from.username);
 
+  // ── VERIFY JOIN ──
   if (data === "verify") {
     joinCache.delete(from.id);
     const missing = await getNotJoinedChannels(from.id);
@@ -1073,7 +1153,7 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── API TOGGLE ──
+  // ── API TOGGLE (admin only) ──
   if (data.startsWith("api_tog_") && _isAdmin) {
     const key = data.replace("api_tog_", "");
     if (apiToggle[key]) {
@@ -1085,6 +1165,7 @@ async function handleCallback(cb) {
     return;
   }
 
+  // ── API OFF MESSAGE SET (admin only) ──
   if (data.startsWith("api_msg_") && _isAdmin) {
     const key = data.replace("api_msg_", "");
     if (apiToggle[key]) {
@@ -1095,30 +1176,37 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── API URL MANAGER CALLBACKS ──
+  // ── API URL MANAGER — MAIN PANEL (FIXED: use MarkdownV2) ──
   if (data === "menu_apiurl" && _isAdmin) {
     await answerCallback(cb.id);
     await tgApi("editMessageText", {
-      chat_id: chatId, message_id: msgId,
+      chat_id: chatId,
+      message_id: msgId,
       text: apiUrlManagerText(),
       parse_mode: "MarkdownV2",
-      reply_markup: apiUrlManagerKb()
+      disable_web_page_preview: true,
+      reply_markup: apiUrlManagerKb(),
     });
     return;
   }
 
+  // ── API URL EDIT BUTTON — Step 1: Ask for new URL ──
   if (data.startsWith("apiurl_edit_") && _isAdmin) {
     const key = data.replace("apiurl_edit_", "");
-    if (apiUrls[key] !== undefined || DEFAULT_API_URLS[key]) {
+    if (DEFAULT_API_URLS[key] !== undefined) {
       await answerCallback(cb.id);
-      userState.set(from.id, `apiurl_set::${key}`);
+      userState.set(from.id, `apiurl_set_url::${key}`);
       const currentUrl = apiUrls[key] || DEFAULT_API_URLS[key];
+      const currentCfg = apiResponseConfig[key] || "raw";
+      const cfgLabel = currentCfg === "raw" ? "Default (pura format)" : `Field: ${currentCfg.replace("field:", "")}`;
       await sendPlain(chatId,
         `╔══════════════════════════╗\n║  🔗  API URL CHANGE       ║\n╠══════════════════════════╣\n` +
-        `API   : ${API_LABELS[key]}\n\n` +
-        `Current URL:\n${currentUrl}\n\n` +
-        `📥  Naya URL bhejo\n` +
-        `⚠️  URL mein {query} zaroor hona chahiye\n` +
+        `API         : ${API_LABELS[key]}\n\n` +
+        `📌 Current URL:\n${currentUrl}\n\n` +
+        `📋 Current Response Config:\n${cfgLabel}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `📥 STEP 1: Naya URL bhejo\n` +
+        `⚠️  URL mein {query} hona ZAROORI hai\n` +
         `   Example: https://api.example.com/search?q={query}&key=abc\n\n` +
         `Ya "cancel" type karo:\n╚══════════════════════════╝`
       );
@@ -1126,26 +1214,34 @@ async function handleCallback(cb) {
     return;
   }
 
+  // ── API URL RESET ──
   if (data.startsWith("apiurl_reset_") && _isAdmin) {
     const key = data.replace("apiurl_reset_", "");
     if (DEFAULT_API_URLS[key]) {
-      await answerCallback(cb.id, `🔄 ${API_LABELS[key]} reset ho gaya!`, true);
       apiUrls[key] = DEFAULT_API_URLS[key];
+      apiResponseConfig[key] = "raw";
       await dbSaveApiUrls();
+      await answerCallback(cb.id, `🔄 ${API_LABELS[key]} reset ho gaya!`, true);
       await tgApi("editMessageText", {
-        chat_id: chatId, message_id: msgId,
+        chat_id: chatId,
+        message_id: msgId,
         text: apiUrlManagerText(),
         parse_mode: "MarkdownV2",
-        reply_markup: apiUrlManagerKb()
+        disable_web_page_preview: true,
+        reply_markup: apiUrlManagerKb(),
       });
     }
     return;
   }
 
-  // ── CHANNEL MANAGER CALLBACKS ──
+  // ── CHANNEL MANAGER ──
   if (data === "menu_channels" && _isAdmin) {
     await answerCallback(cb.id);
-    await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: channelManagerText(), parse_mode: "MarkdownV2", reply_markup: channelManagerKb() });
+    await tgApi("editMessageText", {
+      chat_id: chatId, message_id: msgId,
+      text: channelManagerText(), parse_mode: "MarkdownV2",
+      reply_markup: channelManagerKb(),
+    });
     return;
   }
 
@@ -1163,7 +1259,11 @@ async function handleCallback(cb) {
       const removed = CHANNELS.splice(idx, 1)[0];
       await dbSaveChannels();
       joinCache.clear();
-      await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: channelManagerText(), parse_mode: "MarkdownV2", reply_markup: channelManagerKb() });
+      await tgApi("editMessageText", {
+        chat_id: chatId, message_id: msgId,
+        text: channelManagerText(), parse_mode: "MarkdownV2",
+        reply_markup: channelManagerKb(),
+      });
       await sendPlain(chatId, `╔══════════════════════════╗\n║  🗑️  CHANNEL REMOVED      ║\n╠══════════════════════════╣\n📢  Removed : ${removed.name}\n📊  Total   : ${CHANNELS.length} channels\n╚══════════════════════════╝`);
     } else {
       await sendPlain(chatId, "❌  Channel nahi mila.");
@@ -1171,9 +1271,11 @@ async function handleCallback(cb) {
     return;
   }
 
+  // ── CHECK JOIN FOR NON-ADMIN ──
   await answerCallback(cb.id);
   if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
+  // ── USER MENU PROMPTS ──
   const prompts = {
     menu_number:  "╔════════════════════╗\n║  📞 NUMBER LOOKUP  ║\n╚════════════════════╝\n📥  Number bhejo:\n📌 Format: 9876543210",
     menu_tg:      "╔═══════════════════════╗\n║   🔎  TG LOOKUP       ║\n╠═══════════════════════╣\n📥  Username YA numeric ID\n✅  rtfgamming / @rtfgamming / 8518042438\n╚═══════════════════════╝",
@@ -1189,13 +1291,23 @@ async function handleCallback(cb) {
 
   if (!_isAdmin) return;
 
+  // ── ADMIN-ONLY MENU ACTIONS ──
   if (data === "menu_users")      { const c = await dbUserCount(); await sendPlain(chatId, `📊 Total Users: ${c}\n🗄️ Source: MongoDB`); return; }
   if (data === "menu_dbbackup")   { await sendDbBackup(chatId); return; }
   if (data === "menu_adminlist")  { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST   ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
   if (data === "menu_broadcast")  { userState.set(from.id, "broadcast"); await sendPlain(chatId, "📢  Broadcast message type karo:"); return; }
-  if (data === "menu_setcustomtg") { userState.set(from.id, "setcustomtg_step1"); await sendPlain(chatId, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming"); return; }
-  if (data === "menu_setcustomnum"){ userState.set(from.id, "setcustomnum_step1"); await sendPlain(chatId, "📥  Number bhejo jiska data set karna hai\n📌  Example: 9876543210"); return; }
-  if (data === "menu_api")        { await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: apiManagerText(), reply_markup: apiManagerKb() }); return; }
+  if (data === "menu_setcustomtg")  { userState.set(from.id, "setcustomtg_step1");  await sendPlain(chatId, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming"); return; }
+  if (data === "menu_setcustomnum") { userState.set(from.id, "setcustomnum_step1"); await sendPlain(chatId, "📥  Number bhejo jiska data set karna hai\n📌  Example: 9876543210"); return; }
+
+  if (data === "menu_api") {
+    await tgApi("editMessageText", {
+      chat_id: chatId, message_id: msgId,
+      text: apiManagerText(),
+      reply_markup: apiManagerKb(),
+    });
+    return;
+  }
+
   if (data === "menu_adminpanel") {
     await sendPlain(chatId,
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
@@ -1235,7 +1347,7 @@ async function handleUpdate(update) {
 
     if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
-    // API off message set
+    // ── API OFF MESSAGE SET ──
     if (typeof choice === "string" && choice.startsWith("api_offmsg::") && _isAdmin) {
       const key = choice.split("::")[1];
       userState.delete(from.id);
@@ -1247,27 +1359,75 @@ async function handleUpdate(update) {
       return;
     }
 
-    // ── API URL SET FLOW ──
-    if (typeof choice === "string" && choice.startsWith("apiurl_set::") && _isAdmin) {
+    // ══════════════════════════════════════════════
+    //  API URL SET FLOW — 2 STEPS
+    //  Step 1: apiurl_set_url::<key>  → user sends URL
+    //  Step 2: apiurl_set_resp::<key> → user sends response field (or "raw")
+    // ══════════════════════════════════════════════
+
+    // STEP 1 — Receive new URL
+    if (typeof choice === "string" && choice.startsWith("apiurl_set_url::") && _isAdmin) {
       const key = choice.split("::")[1];
-      userState.delete(from.id);
-      if (text.toLowerCase() === "cancel") { await sendPlain(chatId, "❌  Cancel ho gaya."); return; }
-      if (!text.includes("{query}")) {
-        await sendPlain(chatId, "❌  URL mein {query} nahi hai!\n\nExample: https://api.example.com/search?q={query}&key=abc\n\nDobara try karo /apiurlmanager se.");
+      if (text.toLowerCase() === "cancel") {
+        userState.delete(from.id);
+        await sendPlain(chatId, "❌  Cancel ho gaya.");
         return;
       }
-      if (!DEFAULT_API_URLS[key]) { await sendPlain(chatId, "❌  Invalid API key."); return; }
+      if (!text.includes("{query}")) {
+        await sendPlain(chatId,
+          `❌  URL mein {query} nahi hai!\n\nExample: https://api.example.com/search?q={query}&key=abc\n\nDobara URL bhejo ya "cancel" karo:`
+        );
+        return; // keep state, let them try again
+      }
+      if (!DEFAULT_API_URLS[key]) {
+        userState.delete(from.id);
+        await sendPlain(chatId, "❌  Invalid API key.");
+        return;
+      }
+      // Save URL, move to step 2
       apiUrls[key] = text.trim();
-      await dbSaveApiUrls();
+      userState.set(from.id, `apiurl_set_resp::${key}`);
       await sendPlain(chatId,
-        `╔══════════════════════════╗\n║  ✅  API URL UPDATED      ║\n╠══════════════════════════╣\n` +
-        `API   : ${API_LABELS[key]}\n\n` +
-        `New URL:\n${text.trim()}\n╚══════════════════════════╝`
+        `╔══════════════════════════╗\n║  ✅  URL SAVE HO GAYI     ║\n╠══════════════════════════╣\n` +
+        `API : ${API_LABELS[key]}\n` +
+        `URL : ${text.trim().slice(0, 60)}${text.length > 60 ? "..." : ""}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `📥 STEP 2: Response format set karo\n\n` +
+        `API ka response user ko kaise dikhana hai?\n\n` +
+        `🟢 "raw"     — Default format use karo (recommended)\n` +
+        `🔵 field name — Sirf ek specific field dikhao\n` +
+        `   Example: "name" ya "data.result" ya "number"\n\n` +
+        `"raw" type karo ya field name bhejo:\n╚══════════════════════════╝`
       );
       return;
     }
 
-    // Channel add flow
+    // STEP 2 — Receive response field config
+    if (typeof choice === "string" && choice.startsWith("apiurl_set_resp::") && _isAdmin) {
+      const key = choice.split("::")[1];
+      userState.delete(from.id);
+      if (text.toLowerCase() === "cancel") {
+        // URL already saved in step 1, just skip response config
+        await dbSaveApiUrls();
+        await sendPlain(chatId, `✅  URL save ho gayi. Response config unchanged.\nAPI: ${API_LABELS[key]}`);
+        return;
+      }
+      const cfgValue = text.trim().toLowerCase() === "raw" ? "raw" : `field:${text.trim()}`;
+      apiResponseConfig[key] = cfgValue;
+      await dbSaveApiUrls();
+      const cfgLabel = cfgValue === "raw" ? "Default format (pura response)" : `Sirf field: "${text.trim()}"`;
+      await sendPlain(chatId,
+        `╔══════════════════════════╗\n║  ✅  API FULLY CONFIGURED ║\n╠══════════════════════════╣\n` +
+        `API      : ${API_LABELS[key]}\n` +
+        `URL      : ${apiUrls[key].slice(0, 55)}${apiUrls[key].length > 55 ? "..." : ""}\n` +
+        `Response : ${cfgLabel}\n` +
+        `╠══════════════════════════╣\n` +
+        `✅ Done\\. Ab /apiurlmanager se check karo.\n╚══════════════════════════╝`
+      );
+      return;
+    }
+
+    // ── CHANNEL ADD FLOW ──
     if (_isAdmin && (
       choice === "ch_add_step1" ||
       (typeof choice === "string" && choice.startsWith("ch_add_step2::")) ||
@@ -1277,6 +1437,7 @@ async function handleUpdate(update) {
       return;
     }
 
+    // ── BROADCAST ──
     if (choice === "broadcast" && _isAdmin) {
       const users = await dbGetAllUsers();
       const uids  = users.map(u => u.user_id);
@@ -1338,13 +1499,19 @@ async function handleAdminText(chatId, userId, text) {
       chat_id: chatId,
       text: apiUrlManagerText(),
       parse_mode: "MarkdownV2",
-      reply_markup: apiUrlManagerKb()
+      disable_web_page_preview: true,
+      reply_markup: apiUrlManagerKb(),
     });
     return;
   }
 
   if (lower === "/channelmanager") {
-    await tgApi("sendMessage", { chat_id: chatId, text: channelManagerText(), parse_mode: "MarkdownV2", reply_markup: channelManagerKb() });
+    await tgApi("sendMessage", {
+      chat_id: chatId,
+      text: channelManagerText(),
+      parse_mode: "MarkdownV2",
+      reply_markup: channelManagerKb(),
+    });
     return;
   }
 
