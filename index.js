@@ -918,6 +918,9 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
   }
 }
 
+// ══════════════════════════════════════════════
+//  UPDATED TG HANDLER — automatically detects "result" object
+// ══════════════════════════════════════════════
 async function handleTg(chatId, term, userMsgId = null, userId = null) {
   const rawInput = term.trim();
   term = rawInput.replace(/^@/, "");
@@ -942,7 +945,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
     const rawData = await apiFetch(buildUrl("tg", term), 30000);
     deleteMessage(chatId, statusMsg.message_id);
 
-    // Check custom response config
+    // ---- STEP 1: Check if custom config is set ----
     const customFmt = applyResponseConfig("tg", rawData, term);
     if (customFmt) {
       if (userId) dbIncrSearch(userId);
@@ -950,27 +953,34 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       return;
     }
 
-    // Default TG processing (if not custom)
-    if (!rawData || rawData.success === false) {
+    // ---- STEP 2: Default handling ----
+    // If response has a "result" object, extract fields from there
+    let tgId = null, phone = null, country = null, countryCode = null;
+    if (rawData && rawData.result && typeof rawData.result === "object") {
+      // New API format
+      const res = rawData.result;
+      tgId = String(res.tg_id || "").trim();
+      phone = String(res.number || "").trim();
+      country = String(res.country || "").trim();
+      countryCode = String(res.country_code || "").trim();
+    } else {
+      // Old format (top-level fields)
+      tgId = String(rawData.tg_id || rawData.id || "").trim();
+      phone = String(rawData.number || rawData.phone || "").trim();
+      country = String(rawData.country || "").trim();
+      countryCode = String(rawData.country_code || "").trim();
+    }
+
+    // Check if we got at least a phone or tgId
+    if (!phone && !tgId) {
       await sendDataNotFound(chatId, userMsgId,
-        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
+        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Koi information nahi mili\n╚══════════════════════╝`
       );
       return;
     }
-    const phone = rawData.number ? String(rawData.number).trim() : null;
-    if (!phone || ["","N/A","null","None","undefined","0"].includes(phone)) {
-      await sendDataNotFound(chatId, userMsgId,
-        `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Number nahi mila\n╚══════════════════════╝`
-      );
-      return;
-    }
-    const result = {
-      tgId:        String(rawData.tg_id        || "N/A").trim(),
-      phone:       phone,
-      country:     String(rawData.country      || "N/A").trim(),
-      countryCode: String(rawData.country_code || "N/A").trim(),
-    };
+
     if (userId) dbIncrSearch(userId);
+
     const isUserId = /^\d{5,}$/.test(term);
     let tgBlock =
       `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n`;
@@ -979,22 +989,28 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       tgBlock += `${cbMd("💻 Username    ", displayUsername)}\n`;
     }
     tgBlock +=
-      `${cbMd("🆔 Telegram ID ", result.tgId)}\n` +
-      `${cbMd("📞 Number      ", result.phone)}\n` +
-      `${cbMd("🌍 Country     ", result.country)}\n` +
-      `${cbMd("📱 Country Code", result.countryCode)}\n` +
+      `${cbMd("🆔 Telegram ID ", tgId || "N/A")}\n` +
+      `${cbMd("📞 Number      ", phone || "N/A")}\n` +
+      `${cbMd("🌍 Country     ", country || "N/A")}\n` +
+      `${cbMd("📱 Country Code", countryCode || "N/A")}\n` +
       `└─────────────────────────┘\n`;
-    if (result.phone) {
-      let cleanPhone = result.phone.replace(/[+\s]/g, "").replace(/^91/, "");
+
+    // If phone number found, optionally run Number & Deep APIs
+    if (phone && !["N/A",""].includes(phone)) {
+      let cleanPhone = phone.replace(/[+\s]/g, "").replace(/^91/, "");
       if (cleanPhone.length > 10) cleanPhone = cleanPhone.slice(-10);
-      const [numRes, deepApiRaw] = await Promise.all([
-        fetchNumApi(cleanPhone),
-        fetchDeepApi(cleanPhone),
-      ]);
-      if (numRes.length && apiToggle.num.enabled) tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
-      const deepRecords = parseDeepApiResponse(deepApiRaw);
-      const df = formatDeepResult(deepRecords, cleanPhone);
-      if (df) tgBlock += df;
+      if (cleanPhone.length >= 10) {
+        const [numRes, deepApiRaw] = await Promise.all([
+          fetchNumApi(cleanPhone),
+          fetchDeepApi(cleanPhone),
+        ]);
+        if (numRes.length && apiToggle.num.enabled) {
+          tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
+        }
+        const deepRecords = parseDeepApiResponse(deepApiRaw);
+        const df = formatDeepResult(deepRecords, cleanPhone);
+        if (df) tgBlock += df;
+      }
     }
     await sendDataFound(chatId, userMsgId, tgBlock);
   } catch (e) {
@@ -1200,7 +1216,6 @@ async function handleCallback(cb) {
     await answerCallback(cb.id);
     const text = apiUrlManagerTextHtml();
     const kb   = apiUrlManagerKb();
-    // Try to edit, if fails send new
     const editResult = await tgApi("editMessageText", {
       chat_id: chatId,
       message_id: msgId,
@@ -1210,7 +1225,6 @@ async function handleCallback(cb) {
       reply_markup: kb,
     });
     if (!editResult) {
-      // fallback: send new message
       await sendMessageHtml(chatId, text, { reply_markup: kb });
     }
     return;
@@ -1248,7 +1262,6 @@ async function handleCallback(cb) {
       apiResponseConfig[key] = "raw";
       await dbSaveApiUrls();
       await answerCallback(cb.id, `🔄 ${API_LABELS[key]} reset ho gaya!`, true);
-      // Re-edit the manager panel with HTML
       const text = apiUrlManagerTextHtml();
       const kb   = apiUrlManagerKb();
       const editResult = await tgApi("editMessageText", {
@@ -1414,7 +1427,6 @@ async function handleUpdate(update) {
         await sendPlain(chatId, "❌  Invalid API key.");
         return;
       }
-      // Save URL, move to step 2
       apiUrls[key] = text.trim();
       userState.set(from.id, `apiurl_set_resp::${key}`);
       await sendPlain(chatId,
@@ -1423,10 +1435,9 @@ async function handleUpdate(update) {
         `URL : ${text.trim().slice(0, 60)}${text.length > 60 ? "..." : ""}\n\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
         `📥 STEP 2: Response format set karo\n\n` +
-        `API ka response user ko kaise dikhana hai?\n\n` +
-        `🟢 "raw"     — Default format use karo (recommended)\n` +
+        `🟢 "raw"     — Default format (auto-detect)\n` +
         `🔵 field name — Sirf ek specific field dikhao\n` +
-        `   Example: "name" ya "data.result" ya "number"\n\n` +
+        `   Example: "number" ya "result.number"\n\n` +
         `"raw" type karo ya field name bhejo:\n╚══════════════════════════╝`
       );
       return;
@@ -1444,7 +1455,7 @@ async function handleUpdate(update) {
       const cfgValue = text.trim().toLowerCase() === "raw" ? "raw" : `field:${text.trim()}`;
       apiResponseConfig[key] = cfgValue;
       await dbSaveApiUrls();
-      const cfgLabel = cfgValue === "raw" ? "Default format (pura response)" : `Sirf field: "${text.trim()}"`;
+      const cfgLabel = cfgValue === "raw" ? "Default format (auto-detect)" : `Sirf field: "${text.trim()}"`;
       await sendPlain(chatId,
         `╔══════════════════════════╗\n║  ✅  API FULLY CONFIGURED ║\n╠══════════════════════════╣\n` +
         `API      : ${API_LABELS[key]}\n` +
