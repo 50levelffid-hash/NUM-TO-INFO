@@ -1077,7 +1077,7 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
     const testResult = await tgApi("getChat", { chat_id: isPrivate ? parseInt(ref) : `@${ref}` });
     deleteMessage(chatId, statusMsg.message_id);
     if (!testResult) {
-      await sendPlain(chatId, "╔══════════════════════════╗\n║  ❌  CHANNEL NOT FOUND   ║\n╠══════════════════════════╣\n❌  Bot is channel ka member nahi hai\n   ya channel exist nahi karta.\n\n✅  Bot ko channel admin banao pehle!\n╚══════════════════════════╝");
+      await sendPlain(chatId, `╔══════════════════════════╗\n║  ❌  CHANNEL NOT FOUND   ║\n╠══════════════════════════╣\n❌  Bot is channel ka member nahi hai\n   ya channel exist nahi karta.\n\n✅  Bot ko channel admin banao pehle!\n╚══════════════════════════╝`);
       userState.delete(from.id);
       return;
     }
@@ -1099,7 +1099,7 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
     const refValue  = refPart.replace(/^(id:|user:)/, "");
     if (isPrivate) {
       userState.set(from.id, `ch_add_step3::${refPart}::${displayName}`);
-      await sendPlain(chatId, "╔══════════════════════════╗\n║  🔒  PRIVATE CHANNEL      ║\n╠══════════════════════════╣\n📥  Invite link bhejo (optional):\n   Example: https://t.me/+xxxxxx\n\n   Ya "skip" karo bina invite link ke:\n╚══════════════════════════╝");
+      await sendPlain(chatId, `╔══════════════════════════╗\n║  🔒  PRIVATE CHANNEL      ║\n╠══════════════════════════╣\n📥  Invite link bhejo (optional):\n   Example: https://t.me/+xxxxxx\n\n   Ya "skip" karo bina invite link ke:\n╚══════════════════════════╝`);
       return;
     }
     CHANNELS.push({ name: displayName, username: refValue, id: null, invite_link: null });
@@ -1264,7 +1264,7 @@ async function handleCallback(cb) {
   if (data === "ch_add" && _isAdmin) {
     await answerCallback(cb.id);
     userState.set(from.id, "ch_add_step1");
-    await sendPlain(chatId, "╔══════════════════════════╗\n║  ➕  CHANNEL ADD          ║\n╠══════════════════════════╣\n📥  Channel username ya ID bhejo:\n\n🌐 Public  : RTFGAMING1 ya @RTFGAMING1\n🔒 Private : -1001234567890\n\n⚠️  Bot ko pehle channel admin\n   banana zaroori hai!\n╚══════════════════════════╝");
+    await sendPlain(chatId, `╔══════════════════════════╗\n║  ➕  CHANNEL ADD          ║\n╠══════════════════════════╣\n📥  Channel username ya ID bhejo:\n\n🌐 Public  : RTFGAMING1 ya @RTFGAMING1\n🔒 Private : -1001234567890\n\n⚠️  Bot ko pehle channel admin\n   banana zaroori hai!\n╚══════════════════════════╝`);
     return;
   }
 
