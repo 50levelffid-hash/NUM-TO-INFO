@@ -20,9 +20,9 @@ const OWNER       = "@RTFGAMMING";
 // ── API URLs (dynamic — admin se change ho sakti hain) ──────────────────────
 const DEFAULT_API_URLS = {
   num:     "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={query}&key=mysecretkey123",
-  deep:    "https://rootx-osint.in/?type=num&key=RootXIndia&query={query}",
-  tg:      "https://username2num.suryajasoos.workers.dev/?id={query}",  // <-- updated example
-  adhar:   "https://aadhar-to-family-impds-info-api.onrender.com/search-aadhaar?search=A&aadhaar={query}",
+  deep:    "https://leakapi.suryajasoos.workers.dev/?query={query}",
+  tg:      "https://username2num.suryajasoos.workers.dev/?id={query}",
+  adhar:   "https://aadharinfo.suryahacker.workers.dev/?aadhar={query}",
   upi:     "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={query}",
   vehicle: "https://vehicle.suryahacker.workers.dev/fetch?query={query}",
 };
@@ -45,8 +45,8 @@ let apiResponseConfig = { ...DEFAULT_API_RESPONSE_CONFIG };
 
 // ── CHANNELS (dynamic, DB se load hoga) ───────
 let CHANNELS = [
-  { name: "🔥 RTF GAMING",  username: "RTFGAMING1",     id: null },
-  { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0", id: null },
+  { name: "🔥 RTF GAMING",  username: "RTFGAMMING1",     id: null },
+  { name: "🎁 GIVEAWAY",    username: "RTFGAMMINGHACK0", id: null },
   { name: "🎁 BACKUP",      username: "USERX1NFO",      id: null },
 ];
 
@@ -83,7 +83,7 @@ const API_LABELS = {
 const userQueue = new Map();
 function queueForUser(userId, taskFn) {
   const prev = userQueue.get(userId) || Promise.resolve();
-  const next = prev.then(() => taskFn()).catch(e => console.error(`[QUEUE] uid=${userId}`, e.message));
+  const next = prev.then(() => taskFn()).catch(e => console.error(`[QUEUE] uid=${userId}, ${e.message}`));
   userQueue.set(userId, next);
   next.finally(() => { if (userQueue.get(userId) === next) userQueue.delete(userId); });
   return next;
@@ -217,7 +217,7 @@ async function tgApi(method, body = {}) {
 
 function escMd(text) {
   if (text == null) return "";
-  return String(text).replace(/[_*[\]()~`>#+=|{}.!\\\-]/g, "\\$&");
+  return String(text).replace(/[_*[\]()~>#+=|{}.!\\\-]/g, "\\$&");
 }
 function cbMd(label, value) {
   const v = (value != null ? String(value).trim() : "");
@@ -256,7 +256,7 @@ async function sendDataFound(chatId, userMsgId, text) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
   const res = await sendMessage(chatId, text, extra);
   if (!res) {
-    const plain = text.replace(/[_*[\]()~`>#+=|{}.!\\\-]/g, "");
+    const plain = text.replace(/[_*[\]()~>#+=|{}.!\\\-]/g, "");
     await sendPlain(chatId, plain, extra);
   }
   return res;
@@ -438,7 +438,7 @@ function apiManagerText() {
     const api = apiToggle[k];
     const st  = api.enabled ? "🟢 ON " : "🔴 OFF";
     text += `${st}  ${api.label}\n`;
-    if (!api.enabled) text += `      💬 "${api.offMsg.slice(0,40)}..."\n`;
+    if (!api.enabled) text += `       💬 "${api.offMsg.slice(0,40)}..."\n`;
     text += "\n";
   }
   text += "Toggle = ON/OFF  |  ✏️ = Custom off msg\n╚══════════════════════════╝";
@@ -472,7 +472,7 @@ function formatNumResult(records, number) {
   const colors = ["🔴","🟠","🟡","🟢","🔵"];
   let out =
     `┌─────────────────────────┐\n│  📞  NUMBER INFO         │\n├─────────────────────────┤\n` +
-    `📱  Number  : \`${escMd(number)}\`\n📊  Records : ${Math.min(records.length,5)} found\n\n`;
+    `📱  Number  : ${escMd(number)}\n📊  Records : ${Math.min(records.length,5)} found\n\n`;
   records.slice(0,5).forEach((r,i) => {
     const dot = colors[i % colors.length];
     out +=
@@ -485,6 +485,165 @@ function formatNumResult(records, number) {
   out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
   return out;
 }
+
+// ══════════════════════════════════════════════
+//  NEW DEEP API FORMATTER
+// ══════════════════════════════════════════════
+
+function formatDeepResult(data, queryNumber) {
+  try {
+    if (!data || !data.status || !data.data) return null;
+    
+    const records = [];
+    const sources = data.data;
+    
+    // Extract records from all sources
+    for (const sourceKey of Object.keys(sources)) {
+      const source = sources[sourceKey];
+      if (source.records && Array.isArray(source.records)) {
+        for (const rec of source.records) {
+          const record = {
+            name: rec.FullName || rec.Name || "",
+            fname: rec.FatherName || "",
+            address: rec.Adres || rec.Adres2 || rec.Adres3 || "",
+            phone: rec.Phone || "",
+            phone2: rec.Phone2 || "",
+            phone3: rec.Phone3 || "",
+            phone4: rec.Phone4 || "",
+            phone5: rec.Phone5 || "",
+            phone6: rec.Phone6 || "",
+            documentNumber: rec.DocumentNumber || "",
+            region: rec.Region || "",
+            source: sourceKey,
+            sourceTitle: source.title || "",
+            lastActivity: rec.LastActivity || "",
+            registrationDate: rec.RegistrationDate || "",
+            dateOfBirth: rec.DateOfBirth || "",
+            education: rec.Education || "",
+            age: rec.Age || "",
+            gender: rec.Gender || "",
+          };
+          records.push(record);
+        }
+      }
+    }
+    
+    if (!records.length) return null;
+    
+    const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
+    let text = `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
+               `│  🕵️  D E E P   I N T E L   │\n` +
+               `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
+               `🔢  Query : ${escMd(queryNumber)}\n\n`;
+    
+    // Group records by source
+    const sourceGroups = {};
+    records.forEach(rec => {
+      if (!sourceGroups[rec.source]) sourceGroups[rec.source] = [];
+      sourceGroups[rec.source].push(rec);
+    });
+    
+    let index = 0;
+    for (const sourceKey of Object.keys(sourceGroups)) {
+      const sourceRecords = sourceGroups[sourceKey];
+      const sourceTitle = sourceRecords[0]?.sourceTitle || sourceKey;
+      text += `📁━━━ ${escMd(sourceTitle)} ━━━📁\n`;
+      
+      sourceRecords.forEach((rec, i) => {
+        const dot = colors[index % colors.length];
+        text += `${dot}━━━ RECORD ${index + 1} ━━━${dot}\n`;
+        if (rec.name) text += `${cbMd("👤 Name      ", rec.name)}\n`;
+        if (rec.fname) text += `${cbMd("👨 Father    ", rec.fname)}\n`;
+        if (rec.phone) text += `${cbMd("📞 Phone     ", rec.phone)}\n`;
+        if (rec.phone2) text += `${cbMd("📞 Phone 2   ", rec.phone2)}\n`;
+        if (rec.phone3) text += `${cbMd("📞 Phone 3   ", rec.phone3)}\n`;
+        if (rec.phone4) text += `${cbMd("📞 Phone 4   ", rec.phone4)}\n`;
+        if (rec.phone5) text += `${cbMd("📞 Phone 5   ", rec.phone5)}\n`;
+        if (rec.phone6) text += `${cbMd("📞 Phone 6   ", rec.phone6)}\n`;
+        if (rec.address) text += `${cbMd("📍 Address   ", rec.address)}\n`;
+        if (rec.documentNumber) text += `${cbMd("🪪 Document  ", rec.documentNumber)}\n`;
+        if (rec.region) text += `${cbMd("📡 Region    ", rec.region)}\n`;
+        if (rec.lastActivity) text += `${cbMd("🕐 Last Act. ", rec.lastActivity)}\n`;
+        if (rec.registrationDate) text += `${cbMd("📅 Reg Date  ", rec.registrationDate)}\n`;
+        if (rec.dateOfBirth) text += `${cbMd("🎂 DOB       ", rec.dateOfBirth)}\n`;
+        if (rec.education) text += `${cbMd("🎓 Education ", rec.education)}\n`;
+        if (rec.age) text += `${cbMd("📊 Age       ", rec.age)}\n`;
+        if (rec.gender) text += `${cbMd("⚧️ Gender    ", rec.gender)}\n`;
+        text += "\n";
+        index++;
+      });
+    }
+    
+    text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
+    return text;
+  } catch (e) { 
+    console.error("[formatDeepResult]", e.message); 
+    return null; 
+  }
+}
+
+// ══════════════════════════════════════════════
+//  NEW AADHAAR API FORMATTER
+// ══════════════════════════════════════════════
+
+function formatAdharResult(data, adharNumber) {
+  try {
+    if (!data || typeof data !== "object") return null;
+    
+    // Extract developer/owner fields to skip
+    const skipFields = ["developer"];
+    const records = [];
+    
+    // Iterate through all keys to find record objects
+    for (const key of Object.keys(data)) {
+      if (skipFields.includes(key)) continue;
+      const item = data[key];
+      if (item && typeof item === "object" && item.aadhar) {
+        records.push(item);
+      }
+    }
+    
+    if (!records.length) return null;
+    
+    let out = `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
+              `🔢  Aadhaar : ${escMd(adharNumber)}\n\n`;
+    
+    // Display first record as primary
+    const primary = records[0];
+    out += `📋━━━ PRIMARY INFO ━━━📋\n`;
+    if (primary.name) out += `${cbMd("👤 Name      ", primary.name)}\n`;
+    if (primary.fname) out += `${cbMd("👨 Father    ", primary.fname)}\n`;
+    if (primary.num) out += `${cbMd("📞 Phone     ", primary.num)}\n`;
+    if (primary.alt) out += `${cbMd("📞 Alt Phone ", primary.alt)}\n`;
+    if (primary.address) out += `${cbMd("📍 Address   ", primary.address)}\n`;
+    if (primary.circle) out += `${cbMd("📡 Circle    ", primary.circle)}\n`;
+    
+    // Show additional records if any
+    if (records.length > 1) {
+      out += `\n📋━━━ ADDITIONAL RECORDS (${records.length - 1}) ━━━📋\n`;
+      for (let i = 1; i < records.length && i < 5; i++) {
+        const rec = records[i];
+        out += `\n🔹━━━ RECORD ${i} ━━━🔹\n`;
+        if (rec.name) out += `${cbMd("👤 Name    ", rec.name)}\n`;
+        if (rec.fname) out += `${cbMd("👨 Father  ", rec.fname)}\n`;
+        if (rec.num) out += `${cbMd("📞 Phone   ", rec.num)}\n`;
+        if (rec.alt) out += `${cbMd("📞 Alt     ", rec.alt)}\n`;
+        if (rec.address) out += `${cbMd("📍 Address ", rec.address)}\n`;
+        if (rec.circle) out += `${cbMd("📡 Circle  ", rec.circle)}\n`;
+      }
+    }
+    
+    out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
+    return out;
+  } catch (e) { 
+    console.error("[formatAdhar]", e.message); 
+    return null; 
+  }
+}
+
+// ══════════════════════════════════════════════
+//  OLD FORMATTERS (KEPT FOR COMPATIBILITY)
+// ══════════════════════════════════════════════
 
 function parseDeepApiResponse(data) {
   try {
@@ -506,75 +665,6 @@ function parseDeepApiResponse(data) {
     }
     return records.length ? records : null;
   } catch (e) { console.error("[parseDeepApiResponse]", e.message); return null; }
-}
-
-function formatDeepResult(records, queryNumber) {
-  if (!records || !records.length) return null;
-  const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
-  let text =
-    `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-    `│  🕵️  D E E P   I N T E L   │\n` +
-    `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-    `🔢  Query : \`${escMd(queryNumber)}\`\n\n`;
-  records.forEach((rec, i) => {
-    const dot = colors[i % colors.length];
-    text += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
-    if (rec.name)    text += `${cbMd("👤 Name   ", rec.name)}\n`;
-    if (rec.fname)   text += `${cbMd("👨 Father ", rec.fname)}\n`;
-    if (rec.mobile)  text += `${cbMd("📞 Mobile ", rec.mobile)}\n`;
-    if (rec.alt)     text += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
-    if (rec.address) text += `${cbMd("📍 Address", rec.address)}\n`;
-    if (rec.circle)  text += `${cbMd("📡 Circle ", rec.circle)}\n`;
-    if (rec.id)      text += `${cbMd("🪪 Aadhar ", rec.id)}\n`;
-    text += "\n";
-  });
-  text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
-  return text;
-}
-
-function formatAdharResult(data, adharNumber) {
-  try {
-    if (!data || !data.success || !Array.isArray(data.results) || !data.results.length) return null;
-    const result  = data.results[0];
-    const rc      = result.ration_card_details || {};
-    const addInfo = result.additional_info     || {};
-    const members = result.members             || [];
-    let out =
-      `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
-      `🔢  Aadhaar : \`${escMd(adharNumber)}\`\n\n`;
-    if (Object.keys(rc).length) {
-      out += `📋━━━ RATION CARD ━━━📋\n`;
-      if (rc.ration_card_no) out += `${cbMd("🆔 RC Number  ", rc.ration_card_no)}\n`;
-      if (rc.scheme_name)    out += `${cbMd("📋 Scheme     ", rc.scheme_name)}\n`;
-      if (rc.state_name)     out += `${cbMd("🗺️  State      ", rc.state_name)}\n`;
-      if (rc.district_name)  out += `${cbMd("📍 District   ", rc.district_name)}\n`;
-      out += "\n";
-    }
-    const impds   = addInfo.impds_transaction_allowed;
-    const central = addInfo.exists_in_central_repository;
-    const fpsType = addInfo.fps_category;
-    if (impds !== undefined || central !== undefined || fpsType) {
-      out += `ℹ️━━━ ADDITIONAL INFO ━━━ℹ️\n`;
-      if (central  !== undefined) out += `🏛️  Central Repo   : ${central  ? "✅ YES" : "❌ NO"}\n`;
-      if (impds    !== undefined) out += `💸 IMPDS Allowed  : ${impds    ? "✅ YES" : "❌ NO"}\n`;
-      if (fpsType)                out += `🏪 FPS Category   : \`${escMd(fpsType)}\`\n`;
-      out += "\n";
-    }
-    if (members.length) {
-      out += `👨‍👩‍👧‍👦━━━ FAMILY MEMBERS \\(${members.length}\\) ━━━👨‍👩‍👧‍👦\n`;
-      const colors = ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"];
-      members.forEach((m, i) => {
-        const dot = colors[i % colors.length];
-        out +=
-          `${dot}━━ ${escMd(m.s_no || String(i+1))}\\. ${escMd(m.member_name || "N/A")}\n` +
-          `   🆔 Member ID : \`${escMd(m.member_id || "N/A")}\`\n`;
-        if (m.remark && m.remark.trim()) out += `   📝 Remark    : ${escMd(m.remark)}\n`;
-        out += "\n";
-      });
-    }
-    out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
-    return out;
-  } catch (e) { console.error("[formatAdhar]", e.message); return null; }
 }
 
 function formatUpiResult(data, upiId) {
@@ -662,57 +752,57 @@ function formatVehicleResult(data) {
   const eDate      = v(vd.eDate);
   const lmDate     = v(vd.lmDate);
   const lines = ["┌────────────────────────────┐","│  🚗  VEHICLE INFO           │","└────────────────────────────┘","🔷━━━ REGISTRATION ━━━🔷"];
-  if (regNo)   lines.push(`🚘  Reg No       : \`${escMd(regNo)}\``);
-  if (regAuth) lines.push(`🏛️   Reg Auth     : \`${escMd(regAuth)}\``);
-  if (regDate) lines.push(`📅  Reg Date     : \`${escMd(regDate)}\``);
-  if (rtoCode) lines.push(`🗂️   RTO Code     : \`${escMd(rtoCode)}\``);
-  if (rtoName) lines.push(`🏢  RTO Name     : \`${escMd(rtoName)}\``);
-  if (stateName) lines.push(`🗺️   State        : \`${escMd(stateName)}\``);
+  if (regNo)   lines.push(`🚘  Reg No       : ${escMd(regNo)}`);
+  if (regAuth) lines.push(`🏛️  Reg Auth     : ${escMd(regAuth)}`);
+  if (regDate) lines.push(`📅  Reg Date     : ${escMd(regDate)}`);
+  if (rtoCode) lines.push(`🗂️  RTO Code     : ${escMd(rtoCode)}`);
+  if (rtoName) lines.push(`🏢  RTO Name     : ${escMd(rtoName)}`);
+  if (stateName) lines.push(`🗺️  State        : ${escMd(stateName)}`);
   if ([owner, fatherName, mobile, address, pincode].some(Boolean)) {
     lines.push("\n🔶━━━ OWNER DETAILS ━━━🔶");
-    if (owner)      lines.push(`👤  Owner        : \`${escMd(owner)}\``);
-    if (fatherName) lines.push(`👨  Father       : \`${escMd(fatherName)}\``);
-    if (mobile)     lines.push(`📞  Mobile       : \`${escMd(mobile)}\``);
-    if (address)    lines.push(`📍  Address      : \`${escMd(address)}\``);
-    if (pincode)    lines.push(`📮  Pincode      : \`${escMd(pincode)}\``);
+    if (owner)      lines.push(`👤  Owner        : ${escMd(owner)}`);
+    if (fatherName) lines.push(`👨  Father       : ${escMd(fatherName)}`);
+    if (mobile)     lines.push(`📞  Mobile       : ${escMd(mobile)}`);
+    if (address)    lines.push(`📍  Address      : ${escMd(address)}`);
+    if (pincode)    lines.push(`📮  Pincode      : ${escMd(pincode)}`);
   }
   if ([mfr, model, variant, fuelType, vehClass, cc, seats, mfrYear, vehicleAge].some(Boolean)) {
     lines.push("\n🟢━━━ VEHICLE SPECS ━━━🟢");
-    if (mfr)      lines.push(`🏭  Manufacturer : \`${escMd(mfr)}\``);
-    if (model)    lines.push(`🚗  Model        : \`${escMd(model)}\``);
-    if (variant)  lines.push(`⚙️   Variant      : \`${escMd(variant)}\``);
-    if (fuelType) lines.push(`⛽  Fuel Type    : \`${escMd(fuelType)}\``);
-    if (vehClass) lines.push(`📋  Class        : \`${escMd(vehClass)}\``);
-    if (vehType)  lines.push(`🔖  Type         : \`${escMd(vehType)}\``);
-    if (mfrYear)  lines.push(`📆  Mfr Year     : \`${escMd(mfrYear)}\``);
-    if (vehicleAge) lines.push(`⏳  Vehicle Age  : \`${escMd(vehicleAge)}\``);
-    if (cc)       lines.push(`🔩  Cubic Cap    : \`${escMd(cc)} cc\``);
-    if (seats)    lines.push(`💺  Seats        : \`${escMd(String(seats))}\``);
+    if (mfr)      lines.push(`🏭  Manufacturer : ${escMd(mfr)}`);
+    if (model)    lines.push(`🚗  Model        : ${escMd(model)}`);
+    if (variant)  lines.push(`⚙️  Variant      : ${escMd(variant)}`);
+    if (fuelType) lines.push(`⛽  Fuel Type    : ${escMd(fuelType)}`);
+    if (vehClass) lines.push(`📋  Class        : ${escMd(vehClass)}`);
+    if (vehType)  lines.push(`🔖  Type         : ${escMd(vehType)}`);
+    if (mfrYear)  lines.push(`📆  Mfr Year     : ${escMd(mfrYear)}`);
+    if (vehicleAge) lines.push(`⏳  Vehicle Age  : ${escMd(vehicleAge)}`);
+    if (cc)       lines.push(`🔩  Cubic Cap    : ${escMd(cc)} cc`);
+    if (seats)    lines.push(`💺  Seats        : ${escMd(String(seats))}`);
     if (isComm != null) lines.push(`🏪  Commercial   : ${tick(isComm)}`);
   }
   if ([engNum, chassisNum, last5].some(Boolean)) {
     lines.push("\n🔵━━━ TECHNICAL ━━━🔵");
-    if (engNum)     lines.push(`🔧  Engine No    : \`${escMd(engNum)}\``);
-    if (chassisNum) lines.push(`🔩  Chassis No   : \`${escMd(chassisNum)}\``);
-    if (last5)      lines.push(`🔢  Last 5 Chass : \`${escMd(last5)}\``);
+    if (engNum)     lines.push(`🔧  Engine No    : ${escMd(engNum)}`);
+    if (chassisNum) lines.push(`🔩  Chassis No   : ${escMd(chassisNum)}`);
+    if (last5)      lines.push(`🔢  Last 5 Chass : ${escMd(last5)}`);
   }
   if ([financer, insComp, insPolicy, insUpto, puccValid, puccNo].some(Boolean)) {
     lines.push("\n🟣━━━ FINANCE & INSURANCE ━━━🟣");
-    if (financer)  lines.push(`💰  Financer     : \`${escMd(financer)}\``);
-    if (insComp)   lines.push(`🛡️   Insurance    : \`${escMd(insComp)}\``);
-    if (insPolicy) lines.push(`📄  Policy No    : \`${escMd(insPolicy)}\``);
-    if (insUpto)   lines.push(`📅  Ins Upto     : \`${escMd(insUpto)}\`${insExpired ? " ❌ EXPIRED" : " ✅ VALID"}`);
-    if (puccValid) lines.push(`🌿  PUCC Valid   : \`${escMd(puccValid)}\``);
-    if (puccNo)    lines.push(`📋  PUCC No      : \`${escMd(puccNo)}\``);
+    if (financer)  lines.push(`💰  Financer     : ${escMd(financer)}`);
+    if (insComp)   lines.push(`🛡️  Insurance    : ${escMd(insComp)}`);
+    if (insPolicy) lines.push(`📄  Policy No    : ${escMd(insPolicy)}`);
+    if (insUpto)   lines.push(`📅  Ins Upto     : ${escMd(insUpto)}${insExpired ? " ❌ EXPIRED" : " ✅ VALID"}`);
+    if (puccValid) lines.push(`🌿  PUCC Valid   : ${escMd(puccValid)}`);
+    if (puccNo)    lines.push(`📋  PUCC No      : ${escMd(puccNo)}`);
   }
   if (status || transKey || eDate || lmDate) {
     lines.push("\n📌━━━ ADDITIONAL INFO ━━━📌");
-    if (status)    lines.push(`📊  Status       : \`${escMd(status)}\``);
-    if (transKey)  lines.push(`🔑  Trans Key    : \`${escMd(transKey)}\``);
-    if (eDate)     lines.push(`📅  Entry Date   : \`${escMd(eDate)}\``);
-    if (lmDate)    lines.push(`🔄  Last Modified: \`${escMd(lmDate)}\``);
+    if (status)    lines.push(`📊  Status       : ${escMd(status)}`);
+    if (transKey)  lines.push(`🔑  Trans Key    : ${escMd(transKey)}`);
+    if (eDate)     lines.push(`📅  Entry Date   : ${escMd(eDate)}`);
+    if (lmDate)    lines.push(`🔄  Last Modified: ${escMd(lmDate)}`);
   }
-  lines.push(`\n┌────────────────────────────┐`,`│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │`,"└────────────────────────────┘");
+  lines.push(`\n┌────────────────────────────┐\n│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │\n└────────────────────────────┘`);
   return lines.join("\n");
 }
 
@@ -752,11 +842,11 @@ function applyResponseConfig(key, rawData, query) {
     if (isJson) {
       resultText = `\`\`\`json\n${value}\n\`\`\``;
     } else {
-      resultText = `\`${escMd(value)}\``;
+      resultText = `${escMd(value)}`;
     }
     return (
       `┌─────────────────────────┐\n│  📋  RESULT              │\n├─────────────────────────┤\n` +
-      `🔍  Query  : \`${escMd(query)}\`\n` +
+      `🔍  Query  : ${escMd(query)}\n` +
       `📄  Result :\n${resultText}\n` +
       `└─────────────────────────┘\n` +
       `👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`
@@ -844,10 +934,15 @@ async function fetchNumApi(cleanPhone) {
   } catch (e) { console.error("[NUM API]", e.message); return []; }
 }
 
+// ── UPDATED DEEP API FETCH ────────────────────
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
-  let clean = String(number).replace(/[+\s]/g, "").replace(/^91/, "");
-  if (clean.length > 10) clean = clean.slice(-10);
+  // Clean number: remove spaces, +, and ensure 91 prefix
+  let clean = String(number).replace(/[+\s]/g, "");
+  // If number starts with 91, keep it; otherwise add 91
+  if (!clean.startsWith("91")) {
+    clean = "91" + clean;
+  }
   console.log(`[DEEP API] Querying: ${clean}`);
   try {
     const data = await apiFetch(buildUrl("deep", clean), 30000);
@@ -896,8 +991,7 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
     ]);
     deleteMessage(chatId, statusMsg.message_id);
 
-    const deepRecords = parseDeepApiResponse(deepApiRaw);
-    const deepFmt     = formatDeepResult(deepRecords, clean);
+    const deepFmt = formatDeepResult(deepApiRaw, clean);
 
     if (!records.length && !deepFmt) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: ${clean}\n⚠️  Koi record nahi mila`);
@@ -945,7 +1039,6 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
     const rawData = await apiFetch(buildUrl("tg", term), 30000);
     deleteMessage(chatId, statusMsg.message_id);
 
-    // ---- STEP 1: Check if custom config is set ----
     const customFmt = applyResponseConfig("tg", rawData, term);
     if (customFmt) {
       if (userId) dbIncrSearch(userId);
@@ -953,25 +1046,20 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       return;
     }
 
-    // ---- STEP 2: Default handling ----
-    // If response has a "result" object, extract fields from there
     let tgId = null, phone = null, country = null, countryCode = null;
     if (rawData && rawData.result && typeof rawData.result === "object") {
-      // New API format
       const res = rawData.result;
       tgId = String(res.tg_id || "").trim();
       phone = String(res.number || "").trim();
       country = String(res.country || "").trim();
       countryCode = String(res.country_code || "").trim();
     } else {
-      // Old format (top-level fields)
-      tgId = String(rawData.tg_id || rawData.id || "").trim();
-      phone = String(rawData.number || rawData.phone || "").trim();
+      tgId = String(rawData.id || rawData.tg_id || "").trim();
+      phone = String(rawData.phone || rawData.number || "").trim();
       country = String(rawData.country || "").trim();
       countryCode = String(rawData.country_code || "").trim();
     }
 
-    // Check if we got at least a phone or tgId
     if (!phone && !tgId) {
       await sendDataNotFound(chatId, userMsgId,
         `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Koi information nahi mili\n╚══════════════════════╝`
@@ -995,7 +1083,6 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       `${cbMd("📱 Country Code", countryCode || "N/A")}\n` +
       `└─────────────────────────┘\n`;
 
-    // If phone number found, optionally run Number & Deep APIs
     if (phone && !["N/A",""].includes(phone)) {
       let cleanPhone = phone.replace(/[+\s]/g, "").replace(/^91/, "");
       if (cleanPhone.length > 10) cleanPhone = cleanPhone.slice(-10);
@@ -1007,9 +1094,8 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
         if (numRes.length && apiToggle.num.enabled) {
           tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
         }
-        const deepRecords = parseDeepApiResponse(deepApiRaw);
-        const df = formatDeepResult(deepRecords, cleanPhone);
-        if (df) tgBlock += df;
+        const deepFmt = formatDeepResult(deepApiRaw, cleanPhone);
+        if (deepFmt) tgBlock += deepFmt;
       }
     }
     await sendDataFound(chatId, userMsgId, tgBlock);
@@ -1037,12 +1123,12 @@ async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
       return;
     }
 
-    if (!data || !data.success || !data.results || !data.results.length) {
+    // Use new formatter
+    const formatted = formatAdharResult(data, adharRaw);
+    if (!formatted) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: ${adharRaw}`);
       return;
     }
-    const formatted = formatAdharResult(data, adharRaw);
-    if (!formatted) { await sendDataNotFound(chatId, userMsgId, `❌  Data format error — Aadhaar: ${adharRaw}`); return; }
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, formatted);
   } catch (e) {
@@ -1094,6 +1180,69 @@ async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null)
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, formatVehicleResult(data));
   } catch (e) { console.error("[VEHICLE]", e.message); deleteMessage(chatId, statusMsg.message_id); await sendPlain(chatId, "❌  API Error / Timeout."); }
+}
+
+// ══════════════════════════════════════════════
+//  BROADCAST SYSTEM — SUPPORTS ALL MEDIA TYPES
+// ══════════════════════════════════════════════
+
+async function handleBroadcast(chatId, from, msg, choice) {
+  const users = await dbGetAllUsers();
+  const uids = users.map(u => u.user_id);
+  
+  if (!uids.length) {
+    await sendPlain(chatId, "❌  Koi user nahi hai database mein.");
+    return;
+  }
+
+  const statusMsg = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
+
+  let ok = 0, fail = 0;
+
+  // Check if it's a media message
+  const hasMedia = msg.photo || msg.video || msg.document || msg.audio || msg.animation || msg.sticker || msg.voice || msg.video_note;
+
+  if (hasMedia) {
+    // Forward the media message
+    for (const uid of uids) {
+      try {
+        // Forward the original message with all media and caption
+        const forwarded = await tgApi("forwardMessage", {
+          chat_id: uid,
+          from_chat_id: chatId,
+          message_id: msg.message_id
+        });
+        if (forwarded) ok++; else fail++;
+      } catch (e) {
+        fail++;
+        console.error(`[BROADCAST] Failed for ${uid}:`, e.message);
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+  } else {
+    // Text message broadcast
+    const text = msg.text || "";
+    if (!text) {
+      await sendPlain(chatId, "❌  Kuch toh bhejo! (text ya media)");
+      return;
+    }
+    for (const uid of uids) {
+      try {
+        const res = await tgApi("sendMessage", { chat_id: uid, text });
+        if (res) ok++; else fail++;
+      } catch (e) {
+        fail++;
+        console.error(`[BROADCAST] Failed for ${uid}:`, e.message);
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+
+  await tgApi("editMessageText", {
+    chat_id: chatId,
+    message_id: statusMsg.message_id,
+    text: `╔══════════════════════╗\n║  📢 BROADCAST DONE    ║\n╚══════════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}`
+  });
 }
 
 // ══════════════════════════════════════════════
@@ -1293,7 +1442,7 @@ async function handleCallback(cb) {
   if (data === "ch_add" && _isAdmin) {
     await answerCallback(cb.id);
     userState.set(from.id, "ch_add_step1");
-    await sendPlain(chatId, `╔══════════════════════════╗\n║  ➕  CHANNEL ADD          ║\n╠══════════════════════════╣\n📥  Channel username ya ID bhejo:\n\n🌐 Public  : RTFGAMING1 ya @RTFGAMING1\n🔒 Private : -1001234567890\n\n⚠️  Bot ko pehle channel admin\n   banana zaroori hai!\n╚══════════════════════════╝`);
+    await sendPlain(chatId, `╔══════════════════════════╗\n║  ➕  CHANNEL ADD          ║\n╠══════════════════════════╣\n📥  Channel username ya ID bhejo:\n\n🌐 Public  : RTFGAMMING1 ya @RTFGAMMING1\n🔒 Private : -1001234567890\n\n⚠️  Bot ko pehle channel admin\n   banana zaroori hai!\n╚══════════════════════════╝`);
     return;
   }
 
@@ -1313,6 +1462,14 @@ async function handleCallback(cb) {
     } else {
       await sendPlain(chatId, "❌  Channel nahi mila.");
     }
+    return;
+  }
+
+  // ── BROADCAST CALLBACK ──
+  if (data === "menu_broadcast" && _isAdmin) {
+    await answerCallback(cb.id);
+    userState.set(from.id, "broadcast");
+    await sendPlain(chatId, "📢  Broadcast message type karo:\n\n📎  Text, Photo, Video, File, GIF, APK — sab forward ho jayega!");
     return;
   }
 
@@ -1340,7 +1497,6 @@ async function handleCallback(cb) {
   if (data === "menu_users")      { const c = await dbUserCount(); await sendPlain(chatId, `📊 Total Users: ${c}\n🗄️ Source: MongoDB`); return; }
   if (data === "menu_dbbackup")   { await sendDbBackup(chatId); return; }
   if (data === "menu_adminlist")  { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST   ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
-  if (data === "menu_broadcast")  { userState.set(from.id, "broadcast"); await sendPlain(chatId, "📢  Broadcast message type karo:"); return; }
   if (data === "menu_setcustomtg")  { userState.set(from.id, "setcustomtg_step1");  await sendPlain(chatId, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming"); return; }
   if (data === "menu_setcustomnum") { userState.set(from.id, "setcustomnum_step1"); await sendPlain(chatId, "📥  Number bhejo jiska data set karna hai\n📌  Example: 9876543210"); return; }
 
@@ -1378,6 +1534,15 @@ async function handleUpdate(update) {
     const _isAdmin = isAdmin(from.username);
 
     dbSaveUser(from);
+    
+    // Check if user is in broadcast state
+    const choice = userState.get(from.id);
+    if (choice === "broadcast" && _isAdmin) {
+      await handleBroadcast(chatId, from, msg, choice);
+      userState.delete(from.id);
+      return;
+    }
+
     if (!text) return;
 
     if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin",
@@ -1387,7 +1552,6 @@ async function handleUpdate(update) {
       return await handleAdminText(chatId, from.id, text);
     }
 
-    const choice = userState.get(from.id);
     if (!choice) return;
 
     if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
@@ -1477,17 +1641,7 @@ async function handleUpdate(update) {
       return;
     }
 
-    // ── BROADCAST ──
-    if (choice === "broadcast" && _isAdmin) {
-      const users = await dbGetAllUsers();
-      const uids  = users.map(u => u.user_id);
-      const status = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
-      let ok = 0, fail = 0;
-      for (const uid of uids) { const r = await tgApi("sendMessage", { chat_id: uid, text }); r ? ok++ : fail++; await new Promise(r => setTimeout(r, 50)); }
-      await tgApi("editMessageText", { chat_id: chatId, message_id: status.message_id,
-        text: `╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}` });
-    }
-    else if (choice === "number")  { await handleNumber(chatId, text, msgId, from.id); }
+    if (choice === "number")  { await handleNumber(chatId, text, msgId, from.id); }
     else if (choice === "tg")      { await handleTg(chatId, text, msgId, from.id); }
     else if (choice === "adhar")   { await handleAdhar(chatId, text, msgId, from.id); }
     else if (choice === "upi")     { await handleUpi(chatId, text, msgId, from.id); }
@@ -1556,11 +1710,15 @@ async function handleAdminText(chatId, userId, text) {
 
   if (lower.startsWith("/broadcast")) {
     const msgText = text.slice("/broadcast".length).trim();
-    if (!msgText) { await sendPlain(chatId, "❌  Usage: /broadcast <message>"); return; }
+    if (!msgText) { await sendPlain(chatId, "❌  Usage: /broadcast <message>\nYa bot se directly media forward karo."); return; }
     const users = await dbGetAllUsers(); const uids = users.map(u => u.user_id);
     const status = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
     let ok = 0, fail = 0;
-    for (const uid of uids) { const r = await tgApi("sendMessage", { chat_id: uid, text: msgText }); r ? ok++ : fail++; await new Promise(r => setTimeout(r, 50)); }
+    for (const uid of uids) {
+      const r = await tgApi("sendMessage", { chat_id: uid, text: msgText });
+      r ? ok++ : fail++;
+      await new Promise(r => setTimeout(r, 100));
+    }
     await tgApi("editMessageText", { chat_id: chatId, message_id: status.message_id, text: `✅ Delivered: ${ok}\n❌ Failed: ${fail}\n👥 Total: ${uids.length}` });
     return;
   }
@@ -1624,10 +1782,10 @@ async function handleAdminText(chatId, userId, text) {
   if (lower === "/listcustom") {
     let output = "╔══════════════════════════╗\n║  📋  CUSTOM DATA LIST    ║\n╠══════════════════════════╣\n\n";
     output += "🔹 CUSTOM TG DATA:\n";
-    if (customTgData.size) { for (const [k,v] of customTgData) output += `  👤 ${k}\n     📝 ${v.slice(0,50)}${v.length>50?"...":""}\n`; }
+    if (customTgData.size) { for (const [k,v] of customTgData) output += `   👤 ${k}\n     📝 ${v.slice(0,50)}${v.length>50?"...":""}\n`; }
     else { output += "  ❌ Koi custom TG data nahi\n"; }
     output += "\n🔹 CUSTOM NUMBER DATA:\n";
-    if (customNumData.size) { for (const [k,v] of customNumData) output += `  📱 ${k}\n     📝 ${v.slice(0,50)}${v.length>50?"...":""}\n`; }
+    if (customNumData.size) { for (const [k,v] of customNumData) output += `   📱 ${k}\n     📝 ${v.slice(0,50)}${v.length>50?"...":""}\n`; }
     else { output += "  ❌ Koi custom Number data nahi\n"; }
     output += "╚══════════════════════════╝";
     await sendPlain(chatId, output);
@@ -1671,7 +1829,15 @@ app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
   const uid  = msg.from.id;
   const text = (msg.text || "").trim();
   if (text.startsWith("/")) { queueForUser(uid, () => handleCommand(msg)); }
-  else                      { queueForUser(uid, () => handleUpdate(update)); }
+  else {
+    // Check if user is waiting for broadcast input
+    const choice = userState.get(uid);
+    if (choice === "broadcast" && isAdmin(msg.from.username)) {
+      queueForUser(uid, () => handleUpdate(update));
+    } else {
+      queueForUser(uid, () => handleUpdate(update));
+    }
+  }
 });
 
 app.get("/", (_req, res) => res.send("RTF Bot is running ✅"));
