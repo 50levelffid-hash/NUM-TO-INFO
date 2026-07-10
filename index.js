@@ -18,7 +18,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
 const OWNER       = "@RTFGAMMING";
 
 // ── AUTO DELETE CONFIG ──────────────────────────
-let AUTO_DELETE_TIME = 120; // Default 2 minutes (in seconds)
+let AUTO_DELETE_TIME = 120;
 const AUTO_DELETE_KEY = "auto_delete_time";
 
 // ── API URLs ──────────────────────────────────
@@ -58,7 +58,7 @@ const customTgData  = new Map();
 const customNumData = new Map();
 
 // ── Store messages for auto-delete ──────────────
-const autoDeleteQueue = new Map(); // messageId -> { chatId, deleteTime, timer }
+const autoDeleteQueue = new Map();
 
 // ══════════════════════════════════════════════
 //  COIN & REFERRAL SYSTEM
@@ -207,7 +207,6 @@ async function setAutoDeleteTime(time) {
 }
 
 function scheduleAutoDelete(chatId, messageId, delaySeconds) {
-  // Clear any existing timer for this message
   if (autoDeleteQueue.has(messageId)) {
     const existing = autoDeleteQueue.get(messageId);
     if (existing.timer) clearTimeout(existing.timer);
@@ -446,7 +445,6 @@ async function sendDataNotFound(chatId, userMsgId, notFoundText) {
 
 async function sendDataFound(chatId, userMsgId, text) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
-  // Add auto-delete footer
   const footer = getAutoDeleteFooter();
   const finalText = text + footer;
   
@@ -600,7 +598,7 @@ function apiUrlManagerKb() {
 }
 
 // ══════════════════════════════════════════════
-//  CHANNEL MANAGER
+//  CHANNEL MANAGER - FIXED
 // ══════════════════════════════════════════════
 
 function channelManagerText() {
@@ -611,13 +609,13 @@ function channelManagerText() {
     CHANNELS.forEach((ch, i) => {
       const type = ch.username ? "🌐 Public" : "🔒 Private";
       const ref  = ch.username ? `@${ch.username}` : `ID: ${ch.id}`;
-      text += `${i + 1}\\. ${escMd(ch.name)}\n`;
-      text += `   ${type} \\| ${escMd(ref)}\n`;
+      text += `${i + 1}. ${escMd(ch.name)}\n`;
+      text += `   ${escMd(type)} | ${escMd(ref)}\n`;
       if (ch.invite_link) text += `   🔗 Invite link set ✅\n`;
       text += "\n";
     });
   }
-  text += "🗑️ = Remove  \\|  ➕ = Naya Add\n╚══════════════════════════╝";
+  text += "🗑️ = Remove  |  ➕ = Naya Add\n╚══════════════════════════╝";
   return text;
 }
 
@@ -695,65 +693,132 @@ function formatNumResult(records, number) {
       `${cbMd("☎️  Alt Num",r.alt)}\n${cbMd("🪪 Aadhar ",r.aadhar)}\n` +
       `${cbMd("✉️  Email  ",r.email)}\n\n`;
   });
-  out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
+  out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  |  ⚡ ACTIVE`;
   return out;
 }
 
 // ── FIXED DEEP API PARSER ──
 function parseDeepApiResponse(data) {
   try {
-    if (!data || !data.status || !data.data) return null;
+    if (!data) return null;
     
-    const records = [];
-    const sources = data.data || {};
+    // Try to extract data from various formats
+    let records = [];
     
-    // Process source1 records
-    if (sources.source1 && Array.isArray(sources.source1.records)) {
-      for (const item of sources.source1.records) {
-        const phones = [];
-        for (let i = 1; i <= 10; i++) {
-          const phoneKey = i === 1 ? 'Phone' : `Phone${i}`;
-          const phone = item[phoneKey];
-          if (phone) phones.push(String(phone).trim());
+    // Format 1: Direct array with objects
+    if (Array.isArray(data) && data.length > 0) {
+      for (const item of data) {
+        if (typeof item === 'object' && item !== null) {
+          const rec = {
+            name: String(item.FullName || item.Name || item.name || "").trim(),
+            fname: String(item.FatherName || item.fname || "").trim(),
+            address: String(item.Adres || item.Adres2 || item.Adres3 || item.address || "").trim(),
+            circle: String(item.Region || item.circle || "").trim(),
+            alt: String(item.Phone2 || item.Phone3 || item.Phone4 || item.Phone5 || item.alt || "").trim(),
+            aadhar: String(item.DocumentNumber || item.aadhar || "").trim(),
+            email: String(item.Email || item.email || "").trim(),
+            phone: String(item.Phone || item.phone || "").trim(),
+            age: String(item.Age || item.age || "").trim(),
+            gender: String(item.Gender || item.gender || "").trim(),
+            dob: String(item.DateOfBirth || item.dob || "").trim(),
+            education: String(item.Education || item.education || "").trim(),
+            lastActivity: String(item.LastActivity || item.lastActivity || "").trim(),
+            registrationDate: String(item.RegistrationDate || item.registrationDate || "").trim(),
+          };
+          if (rec.name || rec.phone || rec.address) {
+            records.push(rec);
+          }
         }
-        
-        const uniquePhones = [...new Set(phones)].filter(p => p && p.length > 5);
-        const mainPhone = uniquePhones.length > 0 ? uniquePhones[0] : "N/A";
-        
-        records.push({
-          name:    String(item.FullName || item.Name || "").trim(),
-          fname:   String(item.FatherName || "").trim(),
-          address: String(item.Adres || item.Adres2 || item.Adres3 || "").trim(),
-          circle:  String(item.Region || "").trim(),
-          alt:     uniquePhones.length > 1 ? uniquePhones.slice(1).join(", ") : "N/A",
-          aadhar:  String(item.DocumentNumber || "").trim(),
-          email:   String(item.Email || "").trim(),
-          phone:   mainPhone,
-          source:  "source1"
-        });
       }
     }
     
-    // Process source2 records
-    if (sources.source2 && Array.isArray(sources.source2.records)) {
-      for (const item of sources.source2.records) {
-        records.push({
-          name:    String(item.Name || "").trim(),
-          fname:   "N/A",
-          address: "N/A",
-          circle:  "N/A",
-          alt:     "N/A",
-          aadhar:  "N/A",
-          email:   "N/A",
-          phone:   String(item.Phone || "").trim(),
-          age:     String(item.Age || "").trim(),
-          gender:  String(item.Gender || "").trim(),
-          dob:     String(item.DateOfBirth || "").trim(),
-          education: String(item.Education || "").trim(),
-          lastActivity: String(item.LastActivity || "").trim(),
-          registrationDate: String(item.RegistrationDate || "").trim(),
-          source:  "source2"
-        });
+    // Format 2: Object with data/result property
+    if (records.length === 0 && data && typeof data === 'object') {
+      const sourceData = data.data || data.result || data;
+      if (Array.isArray(sourceData)) {
+        for (const item of sourceData) {
+          if (typeof item === 'object' && item !== null) {
+            const rec = {
+              name: String(item.FullName || item.Name || item.name || "").trim(),
+              fname: String(item.FatherName || item.fname || "").trim(),
+              address: String(item.Adres || item.Adres2 || item.Adres3 || item.address || "").trim(),
+              circle: String(item.Region || item.circle || "").trim(),
+              alt: String(item.Phone2 || item.Phone3 || item.Phone4 || item.Phone5 || item.alt || "").trim(),
+              aadhar: String(item.DocumentNumber || item.aadhar || "").trim(),
+              email: String(item.Email || item.email || "").trim(),
+              phone: String(item.Phone || item.phone || "").trim(),
+              age: String(item.Age || item.age || "").trim(),
+              gender: String(item.Gender || item.gender || "").trim(),
+              dob: String(item.DateOfBirth || item.dob || "").trim(),
+              education: String(item.Education || item.education || "").trim(),
+              lastActivity: String(item.LastActivity || item.lastActivity || "").trim(),
+              registrationDate: String(item.RegistrationDate || item.registrationDate || "").trim(),
+            };
+            if (rec.name || rec.phone || rec.address) {
+              records.push(rec);
+            }
+          }
+        }
+      }
+    }
+    
+    // Format 3: sources format (source1, source2)
+    if (records.length === 0 && data && typeof data === 'object' && data.data) {
+      const sources = data.data;
+      if (sources.source1 && Array.isArray(sources.source1.records)) {
+        for (const item of sources.source1.records) {
+          const phones = [];
+          for (let i = 1; i <= 10; i++) {
+            const phoneKey = i === 1 ? 'Phone' : `Phone${i}`;
+            const phone = item[phoneKey];
+            if (phone) phones.push(String(phone).trim());
+          }
+          const uniquePhones = [...new Set(phones)].filter(p => p && p.length > 5);
+          const mainPhone = uniquePhones.length > 0 ? uniquePhones[0] : "";
+          
+          const rec = {
+            name: String(item.FullName || item.Name || "").trim(),
+            fname: String(item.FatherName || "").trim(),
+            address: String(item.Adres || item.Adres2 || item.Adres3 || "").trim(),
+            circle: String(item.Region || "").trim(),
+            alt: uniquePhones.length > 1 ? uniquePhones.slice(1).join(", ") : "",
+            aadhar: String(item.DocumentNumber || "").trim(),
+            email: String(item.Email || "").trim(),
+            phone: mainPhone,
+            age: "",
+            gender: "",
+            dob: "",
+            education: "",
+            lastActivity: "",
+            registrationDate: "",
+          };
+          if (rec.name || rec.phone || rec.address) {
+            records.push(rec);
+          }
+        }
+      }
+      if (sources.source2 && Array.isArray(sources.source2.records)) {
+        for (const item of sources.source2.records) {
+          const rec = {
+            name: String(item.Name || item.name || "").trim(),
+            fname: String(item.FatherName || item.fname || "").trim(),
+            address: String(item.Address || item.address || "").trim(),
+            circle: String(item.Circle || item.circle || "").trim(),
+            alt: String(item.Alt || item.alt || "").trim(),
+            aadhar: String(item.Aadhar || item.aadhar || "").trim(),
+            email: String(item.Email || item.email || "").trim(),
+            phone: String(item.Phone || item.phone || "").trim(),
+            age: String(item.Age || item.age || "").trim(),
+            gender: String(item.Gender || item.gender || "").trim(),
+            dob: String(item.DateOfBirth || item.dob || "").trim(),
+            education: String(item.Education || item.education || "").trim(),
+            lastActivity: String(item.LastActivity || item.lastActivity || "").trim(),
+            registrationDate: String(item.RegistrationDate || item.registrationDate || "").trim(),
+          };
+          if (rec.name || rec.phone || rec.address) {
+            records.push(rec);
+          }
+        }
       }
     }
     
@@ -767,6 +832,7 @@ function parseDeepApiResponse(data) {
 // ── FIXED DEEP FORMATTER ──
 function formatDeepResult(records, queryNumber) {
   if (!records || !records.length) return null;
+  
   const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
   let text =
     `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
@@ -778,23 +844,37 @@ function formatDeepResult(records, queryNumber) {
     const dot = colors[i % colors.length];
     const sourceLabel = rec.source === 'source1' ? '📀 HiTeckGroop' : '🪪 KaushalbHarat';
     text += `${dot}━━━ RECORD ${i+1} ━━━ ${sourceLabel} ${dot}\n`;
-    if (rec.name)    text += `${cbMd("👤 Name   ", rec.name)}\n`;
-    if (rec.fname && rec.fname !== "N/A")   text += `${cbMd("👨 Father ", rec.fname)}\n`;
-    if (rec.phone && rec.phone !== "N/A")   text += `${cbMd("📞 Phone  ", rec.phone)}\n`;
-    if (rec.alt && rec.alt !== "N/A")       text += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
-    if (rec.address && rec.address !== "N/A") text += `${cbMd("📍 Address", rec.address)}\n`;
-    if (rec.circle && rec.circle !== "N/A")  text += `${cbMd("📡 Circle ", rec.circle)}\n`;
-    if (rec.aadhar && rec.aadhar !== "N/A")  text += `${cbMd("🪪 Aadhar ", rec.aadhar)}\n`;
-    if (rec.email && rec.email !== "N/A")    text += `${cbMd("✉️  Email  ", rec.email)}\n`;
-    if (rec.age && rec.age !== "N/A")        text += `${cbMd("🎂 Age    ", rec.age)}\n`;
-    if (rec.gender && rec.gender !== "N/A")  text += `${cbMd("⚧ Gender ", rec.gender)}\n`;
-    if (rec.dob && rec.dob !== "N/A")        text += `${cbMd("📅 DOB    ", rec.dob)}\n`;
-    if (rec.education && rec.education !== "N/A") text += `${cbMd("🎓 Education", rec.education)}\n`;
-    if (rec.lastActivity && rec.lastActivity !== "N/A") text += `${cbMd("🕐 Last Activity", rec.lastActivity)}\n`;
-    if (rec.registrationDate && rec.registrationDate !== "N/A") text += `${cbMd("📋 Registered", rec.registrationDate)}\n`;
+    if (rec.name && rec.name !== "N/A" && rec.name !== "")    
+      text += `${cbMd("👤 Name   ", rec.name)}\n`;
+    if (rec.fname && rec.fname !== "N/A" && rec.fname !== "")   
+      text += `${cbMd("👨 Father ", rec.fname)}\n`;
+    if (rec.phone && rec.phone !== "N/A" && rec.phone !== "")   
+      text += `${cbMd("📞 Phone  ", rec.phone)}\n`;
+    if (rec.alt && rec.alt !== "N/A" && rec.alt !== "")       
+      text += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
+    if (rec.address && rec.address !== "N/A" && rec.address !== "") 
+      text += `${cbMd("📍 Address", rec.address)}\n`;
+    if (rec.circle && rec.circle !== "N/A" && rec.circle !== "")  
+      text += `${cbMd("📡 Circle ", rec.circle)}\n`;
+    if (rec.aadhar && rec.aadhar !== "N/A" && rec.aadhar !== "")  
+      text += `${cbMd("🪪 Aadhar ", rec.aadhar)}\n`;
+    if (rec.email && rec.email !== "N/A" && rec.email !== "")    
+      text += `${cbMd("✉️  Email  ", rec.email)}\n`;
+    if (rec.age && rec.age !== "N/A" && rec.age !== "")        
+      text += `${cbMd("🎂 Age    ", rec.age)}\n`;
+    if (rec.gender && rec.gender !== "N/A" && rec.gender !== "")  
+      text += `${cbMd("⚧ Gender ", rec.gender)}\n`;
+    if (rec.dob && rec.dob !== "N/A" && rec.dob !== "")        
+      text += `${cbMd("📅 DOB    ", rec.dob)}\n`;
+    if (rec.education && rec.education !== "N/A" && rec.education !== "") 
+      text += `${cbMd("🎓 Education", rec.education)}\n`;
+    if (rec.lastActivity && rec.lastActivity !== "N/A" && rec.lastActivity !== "") 
+      text += `${cbMd("🕐 Last Activity", rec.lastActivity)}\n`;
+    if (rec.registrationDate && rec.registrationDate !== "N/A" && rec.registrationDate !== "") 
+      text += `${cbMd("📋 Registered", rec.registrationDate)}\n`;
     text += "\n";
   });
-  text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
+  text += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  |  ⚡ DEEP INTEL`;
   return text;
 }
 
@@ -832,7 +912,7 @@ function formatAdharResult(data, adharNumber) {
       out += "\n";
     });
     
-    out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
+    out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  |  ⚡ ACTIVE`;
     return out;
   } catch (e) { 
     console.error("[formatAdhar]", e.message); 
@@ -876,7 +956,7 @@ function formatUpiResult(data, upiId) {
     if (imps   != null) lines.push(`📲 IMPS        : ${tick(imps)}`);
     if (upiSup != null) lines.push(`💳 UPI         : ${tick(upiSup)}`);
   }
-  lines.push("└─────────────────────────┘", `👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`);
+  lines.push("└─────────────────────────┘", `👑  ${escMd(OWNER)}  |  ⚡ ACTIVE`);
   return lines.join("\n");
 }
 
@@ -975,7 +1055,7 @@ function formatVehicleResult(data) {
     if (eDate)     lines.push(`📅  Entry Date   : ${escMd(eDate)}`);
     if (lmDate)    lines.push(`🔄  Last Modified: ${escMd(lmDate)}`);
   }
-  lines.push(`\n┌────────────────────────────┐`, `│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │`, `└────────────────────────────┘`);
+  lines.push(`\n┌────────────────────────────┐`, `│  👑 ${escMd(OWNER)}  |  ⚡ ACTIVE  │`, `└────────────────────────────┘`);
   return lines.join("\n");
 }
 
@@ -1020,7 +1100,7 @@ function applyResponseConfig(key, rawData, query) {
       `🔍  Query  : ${escMd(query)}\n` +
       `📄  Result :\n${resultText}\n` +
       `└─────────────────────────┘\n` +
-      `👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`
+      `👑  ${escMd(OWNER)}  |  ⚡ ACTIVE`
     );
   }
   return null;
@@ -1107,7 +1187,8 @@ async function fetchNumApi(cleanPhone) {
 
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
-  let clean = String(number).replace(/[+\s]/g, "").replace(/^\+91/, "");
+  // Clean number: remove +, spaces, then add 91 if not present
+  let clean = String(number).replace(/[+\s]/g, "");
   if (!clean.startsWith("91")) {
     clean = "91" + clean;
   }
@@ -1533,7 +1614,7 @@ async function handleMyRequests(chatId, userId) {
 }
 
 // ══════════════════════════════════════════════
-//  CHANNEL ADD FLOW HANDLER
+//  CHANNEL ADD FLOW HANDLER - FIXED
 // ══════════════════════════════════════════════
 async function handleChannelAddFlow(chatId, from, text, choice) {
   if (choice === "ch_add_step1") {
@@ -1818,6 +1899,7 @@ async function handleCallback(cb) {
     return;
   }
 
+  // ── CHANNEL MANAGER - FIXED ──
   if (data === "menu_channels" && _isAdmin) {
     await answerCallback(cb.id);
     await tgApi("editMessageText", {
@@ -2361,7 +2443,7 @@ async function start() {
   await initDb();
   await dbLoadChannels();
   await dbLoadApiUrls();
-  await getAutoDeleteTime(); // Load auto-delete time from DB
+  await getAutoDeleteTime();
   
   await setMyCommands([
     { command: "start",          description: "🏠 Main Menu" },
