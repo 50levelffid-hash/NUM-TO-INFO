@@ -17,6 +17,10 @@ const PORT        = process.env.PORT        || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
 const OWNER       = "@RTFGAMMING";
 
+// ── AUTO DELETE CONFIG ──────────────────────────
+let AUTO_DELETE_TIME = 120; // Default 2 minutes (in seconds)
+const AUTO_DELETE_KEY = "auto_delete_time";
+
 // ── API URLs ──────────────────────────────────
 const DEFAULT_API_URLS = {
   num:     "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={query}&key=mysecretkey123",
@@ -53,11 +57,13 @@ const userState     = new Map();
 const customTgData  = new Map();
 const customNumData = new Map();
 
+// ── Store messages for auto-delete ──────────────
+const autoDeleteQueue = new Map(); // messageId -> { chatId, deleteTime, timer }
+
 // ══════════════════════════════════════════════
 //  COIN & REFERRAL SYSTEM
 // ══════════════════════════════════════════════
 const referralCooldown = new Map();
-// Store referral attempts: referrerId -> { userId, timestamp, checked }
 const referralAttempts = new Map();
 
 async function getUserCoins(userId) {
@@ -173,6 +179,58 @@ async function getUserRequests(userId) {
     console.error("[GET USER REQUESTS]", e.message);
     return [];
   }
+}
+
+// ── AUTO DELETE FUNCTIONS ────────────────────
+async function getAutoDeleteTime() {
+  if (!dataCol) return AUTO_DELETE_TIME;
+  try {
+    const doc = await dataCol.findOne({ key: AUTO_DELETE_KEY });
+    if (doc && doc.value) {
+      AUTO_DELETE_TIME = parseInt(doc.value) || 120;
+      return AUTO_DELETE_TIME;
+    }
+  } catch (e) { console.error("[GET AUTO DELETE]", e.message); }
+  return AUTO_DELETE_TIME;
+}
+
+async function setAutoDeleteTime(time) {
+  if (!dataCol) return;
+  try {
+    await dataCol.updateOne(
+      { key: AUTO_DELETE_KEY },
+      { $set: { key: AUTO_DELETE_KEY, value: time, updated_at: new Date().toISOString() } },
+      { upsert: true }
+    );
+    AUTO_DELETE_TIME = time;
+  } catch (e) { console.error("[SET AUTO DELETE]", e.message); }
+}
+
+function scheduleAutoDelete(chatId, messageId, delaySeconds) {
+  // Clear any existing timer for this message
+  if (autoDeleteQueue.has(messageId)) {
+    const existing = autoDeleteQueue.get(messageId);
+    if (existing.timer) clearTimeout(existing.timer);
+    autoDeleteQueue.delete(messageId);
+  }
+  
+  const timer = setTimeout(async () => {
+    try {
+      await deleteMessage(chatId, messageId);
+      autoDeleteQueue.delete(messageId);
+    } catch (e) {
+      console.error("[AUTO DELETE]", e.message);
+    }
+  }, delaySeconds * 1000);
+  
+  autoDeleteQueue.set(messageId, { chatId, deleteTime: Date.now() + (delaySeconds * 1000), timer });
+}
+
+function getAutoDeleteFooter() {
+  const minutes = Math.floor(AUTO_DELETE_TIME / 60);
+  const seconds = AUTO_DELETE_TIME % 60;
+  const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  return `\n\n⚠️  This message will auto-delete in ${timeStr}\n📋  Copy/Save this data now!`;
 }
 
 // ══════════════════════════════════════════════
@@ -381,18 +439,29 @@ const sendPlain = (chat_id, text, extra = {}) => tgApi("sendMessage", { chat_id,
 async function sendDataNotFound(chatId, userMsgId, notFoundText) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
   const notFoundMsg = await sendPlain(chatId, notFoundText, extra);
-  setTimeout(() => {
-    if (notFoundMsg) deleteMessage(chatId, notFoundMsg.message_id);
-    if (userMsgId)   deleteMessage(chatId, userMsgId);
-  }, 15000);
+  const delay = await getAutoDeleteTime();
+  if (notFoundMsg) scheduleAutoDelete(chatId, notFoundMsg.message_id, delay);
+  if (userMsgId) scheduleAutoDelete(chatId, userMsgId, delay);
 }
 
 async function sendDataFound(chatId, userMsgId, text) {
   const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
-  const res = await sendMessage(chatId, text, extra);
+  // Add auto-delete footer
+  const footer = getAutoDeleteFooter();
+  const finalText = text + footer;
+  
+  const res = await sendMessage(chatId, finalText, extra);
   if (!res) {
-    const plain = text.replace(/[_*[\]()~>#+=|{}.!\\\-]/g, "");
-    await sendPlain(chatId, plain, extra);
+    const plain = finalText.replace(/[_*[\]()~>#+=|{}.!\\\-]/g, "");
+    const plainRes = await sendPlain(chatId, plain, extra);
+    if (plainRes) {
+      const delay = await getAutoDeleteTime();
+      scheduleAutoDelete(chatId, plainRes.message_id, delay);
+    }
+  } else {
+    const delay = await getAutoDeleteTime();
+    scheduleAutoDelete(chatId, res.message_id, delay);
+    if (userMsgId) scheduleAutoDelete(chatId, userMsgId, delay);
   }
   return res;
 }
@@ -450,7 +519,7 @@ async function sendJoinPrompt(chatId) {
 // ── MENUS ─────────────────────────────────────
 const MAIN_MENU_TEXT =
   "╔══════════════════════════╗\n║  ⚡️  R T F   B O T  ⚡️   ║\n╠══════════════════════════╣\n" +
-  "🛡  Status  : ONLINE\n👑  Owner   : @RTFGAMMING\n🔥  Version : v3.5\n" +
+  "🛡  Status  : ONLINE\n👑  Owner   : @RTFGAMMING\n🔥  Version : v4.0\n" +
   "╠══════════════════════════╣\n📌  Neeche se option chuno:\n╚══════════════════════════╝";
 
 const HELP_TEXT =
@@ -464,6 +533,7 @@ const HELP_TEXT =
   "🔗  /refer - Get referral link\n" +
   "📝  /request <type> <query> - Request data (1 coin)\n" +
   "📋  /myrequests - Check your requests\n\n" +
+  "⏰  Data auto-delete: 2 min (Admin can change)\n" +
   "🏠 /start  ❓ /help\n╠══════════════════════════╣\n👑  Owner : @RTFGAMMING\n╚══════════════════════════╝";
 
 function mainMenuKb() {
@@ -494,6 +564,7 @@ function adminMenuKb() {
     [{ text: "🔗 API URL Manager", callback_data: "menu_apiurl" }],
     [{ text: "📢 Channel Manager", callback_data: "menu_channels" }],
     [{ text: "📝 Pending Requests", callback_data: "menu_pending_requests" }],
+    [{ text: "⏰ Set Auto-Delete", callback_data: "menu_autodelete" }],
   ]};
 }
 
@@ -639,19 +710,14 @@ function parseDeepApiResponse(data) {
     // Process source1 records
     if (sources.source1 && Array.isArray(sources.source1.records)) {
       for (const item of sources.source1.records) {
-        // Collect all phone numbers - using proper property names
         const phones = [];
-        // Check all Phone fields (Phone, Phone2, Phone3, etc.)
         for (let i = 1; i <= 10; i++) {
           const phoneKey = i === 1 ? 'Phone' : `Phone${i}`;
           const phone = item[phoneKey];
           if (phone) phones.push(String(phone).trim());
         }
         
-        // Remove duplicates and filter
         const uniquePhones = [...new Set(phones)].filter(p => p && p.length > 5);
-        
-        // Get the main phone (first one or the one matching query)
         const mainPhone = uniquePhones.length > 0 ? uniquePhones[0] : "N/A";
         
         records.push({
@@ -720,7 +786,6 @@ function formatDeepResult(records, queryNumber) {
     if (rec.circle && rec.circle !== "N/A")  text += `${cbMd("📡 Circle ", rec.circle)}\n`;
     if (rec.aadhar && rec.aadhar !== "N/A")  text += `${cbMd("🪪 Aadhar ", rec.aadhar)}\n`;
     if (rec.email && rec.email !== "N/A")    text += `${cbMd("✉️  Email  ", rec.email)}\n`;
-    // Source2 specific fields
     if (rec.age && rec.age !== "N/A")        text += `${cbMd("🎂 Age    ", rec.age)}\n`;
     if (rec.gender && rec.gender !== "N/A")  text += `${cbMd("⚧ Gender ", rec.gender)}\n`;
     if (rec.dob && rec.dob !== "N/A")        text += `${cbMd("📅 DOB    ", rec.dob)}\n`;
@@ -1290,6 +1355,7 @@ async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null)
 
 async function handleCoins(chatId, userId) {
   const coins = await getUserCoins(userId);
+  const deleteTime = await getAutoDeleteTime();
   await sendPlain(chatId,
     `╔══════════════════════════╗\n║  💰  YOUR COINS          ║\n╠══════════════════════════╣\n` +
     `🪙  Total Coins : ${coins}\n\n` +
@@ -1299,7 +1365,8 @@ async function handleCoins(chatId, userId) {
     `🔗  Use /refer to get your referral link\n` +
     `   Each referral = 1 coin\n` +
     `   (Max 2 referrals per minute)\n` +
-    `   ⚠️  Referral valid only if user joins all channels\n` +
+    `   ⚠️  Referral valid only if user joins all channels\n\n` +
+    `⏰  Auto-delete time: ${deleteTime}s\n` +
     `╚══════════════════════════╝`
   );
 }
@@ -1325,19 +1392,16 @@ async function handleRefer(chatId, from) {
 async function handleReferralStart(userId, referrerId) {
   if (userId === referrerId) return;
   
-  // Check if referrer can get coins (rate limit)
   if (!canRefer(referrerId)) {
     console.log(`[REFERRAL] ${referrerId} rate limited`);
     return;
   }
   
-  // Check if user has joined all channels
   const hasJoined = await checkJoin(userId);
   if (!hasJoined) {
-    // Store attempt for later verification
     referralAttempts.set(referrerId, { userId, timestamp: Date.now(), checked: false });
     await sendPlain(referrerId, 
-      `⚠️  ${userId} ne aapka referral use kiya, lekin abhi tak channels join nahi kiye.\n` +
+      `⚠️  Kisi ne aapka referral use kiya, lekin abhi tak channels join nahi kiye.\n` +
       `✅  Jab wo channels join karega, tab coin milega.`
     );
     return;
@@ -1349,7 +1413,6 @@ async function handleReferralStart(userId, referrerId) {
   await sendPlain(referrerId, `🎉  ${name} ne aapka referral use kiya aur channels join kiye!\n🪙  +1 coin mil gaya!`);
 }
 
-// Check referral attempts when user verifies join
 async function checkPendingReferrals(userId) {
   for (const [referrerId, data] of referralAttempts) {
     if (data.userId === userId && !data.checked) {
@@ -1419,7 +1482,6 @@ async function handleRequest(chatId, text, from, userMsgId = null) {
     `╚══════════════════════════╝`
   );
   
-  // Create inline keyboard for admin
   const adminKb = {
     inline_keyboard: [
       [
@@ -1540,6 +1602,26 @@ async function handleCallback(cb) {
   const data     = cb.data;
   const _isAdmin = isAdmin(from.username);
 
+  // ── AUTO DELETE SET ──
+  if (data === "menu_autodelete" && _isAdmin) {
+    await answerCallback(cb.id);
+    const currentTime = await getAutoDeleteTime();
+    userState.set(from.id, "autodelete_set");
+    await sendPlain(chatId,
+      `╔══════════════════════════╗\n║  ⏰  AUTO-DELETE SETUP    ║\n╠══════════════════════════╣\n` +
+      `Current auto-delete time: ${currentTime} seconds\n` +
+      `${Math.floor(currentTime/60)} minutes ${currentTime%60} seconds\n\n` +
+      `📥  Naya time seconds mein bhejo:\n` +
+      `   Example: 120 = 2 minutes\n` +
+      `   Example: 60 = 1 minute\n` +
+      `   Example: 300 = 5 minutes\n\n` +
+      `Min: 10 seconds | Max: 600 seconds (10 min)\n` +
+      `Ya "cancel" type karo:\n` +
+      `╚══════════════════════════╝`
+    );
+    return;
+  }
+
   if (data === "verify") {
     joinCache.delete(from.id);
     const missing = await getNotJoinedChannels(from.id);
@@ -1557,7 +1639,6 @@ async function handleCallback(cb) {
       await answerCallback(cb.id);
       const kb = _isAdmin ? adminMenuKb() : mainMenuKb();
       await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: MAIN_MENU_TEXT, reply_markup: kb });
-      // Check pending referrals
       await checkPendingReferrals(from.id);
     }
     return;
@@ -1614,11 +1695,10 @@ async function handleCallback(cb) {
         await updateRequestStatus(req._id, 'approved', result);
         
         if (result && result !== "Data fetch failed.") {
-          await sendPlain(req.user_id, 
+          await sendDataFound(req.user_id, null, 
             `╔══════════════════════════╗\n║  ✅  REQUEST APPROVED     ║\n╠══════════════════════════╣\n` +
             `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
-            `📄  Result:\n${result}\n` +
-            `╚══════════════════════════╝`
+            `📄  Result:\n${result}`
           );
         } else {
           await sendPlain(req.user_id, 
@@ -1845,6 +1925,7 @@ async function handleCallback(cb) {
       "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
       "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n" +
       "🔗 /apiurlmanager  📢 /channelmanager\n📝 Pending requests in admin panel\n" +
+      "⏰ /setautodelete <seconds> - Set auto-delete time\n" +
       "╚══════════════════════════╝"
     );
     return;
@@ -1869,7 +1950,7 @@ async function handleUpdate(update) {
 
     if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin",
         "/setcustomtg","/delcustomtg","/setcustomnum","/delcustomnum","/listcustom","/dbbackup",
-        "/apimanager","/apiurlmanager","/channelmanager","/pending"]
+        "/apimanager","/apiurlmanager","/channelmanager","/pending","/setautodelete"]
         .some(c => text.toLowerCase().startsWith(c))) {
       return await handleAdminText(chatId, from.id, text);
     }
@@ -1878,6 +1959,29 @@ async function handleUpdate(update) {
     if (!choice) return;
 
     if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
+
+    // ── AUTO DELETE TIME SET ──
+    if (choice === "autodelete_set" && _isAdmin) {
+      userState.delete(from.id);
+      if (text.toLowerCase() === "cancel") {
+        await sendPlain(chatId, "❌  Cancel ho gaya.");
+        return;
+      }
+      const time = parseInt(text.trim());
+      if (isNaN(time) || time < 10 || time > 600) {
+        await sendPlain(chatId, "❌  Invalid time! Please enter between 10-600 seconds.\nExample: 120 = 2 minutes");
+        return;
+      }
+      await setAutoDeleteTime(time);
+      await sendPlain(chatId, 
+        `╔══════════════════════════╗\n║  ✅  AUTO-DELETE UPDATED   ║\n╠══════════════════════════╣\n` +
+        `⏰  New auto-delete time: ${time} seconds\n` +
+        `${Math.floor(time/60)} minutes ${time%60} seconds\n\n` +
+        `✅  All new messages will auto-delete after this time.\n` +
+        `╚══════════════════════════╝`
+      );
+      return;
+    }
 
     if (typeof choice === "string" && choice.startsWith("api_offmsg::") && _isAdmin) {
       const key = choice.split("::")[1];
@@ -2033,7 +2137,8 @@ async function handleAdminText(chatId, userId, text) {
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
       "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
       "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n" +
-      "📋 /listcustom  🔌 /apimanager\n🔗 /apiurlmanager  📢 /channelmanager\n📝 /pending  - Pending requests\n" +
+      "📋 /listcustom  🔌 /apimanager\n🔗 /apiurlmanager  📢 /channelmanager\n" +
+      "📝 /pending  - Pending requests\n⏰ /setautodelete <seconds> - Set auto-delete\n" +
       "╚══════════════════════════╝"
     );
     return;
@@ -2055,6 +2160,35 @@ async function handleAdminText(chatId, userId, text) {
     });
     text += `╚══════════════════════════╝`;
     await sendPlain(chatId, text);
+    return;
+  }
+
+  if (lower.startsWith("/setautodelete")) {
+    const parts = text.trim().split(/\s+/);
+    if (parts.length < 2) {
+      const currentTime = await getAutoDeleteTime();
+      await sendPlain(chatId, 
+        `⏰  Current auto-delete time: ${currentTime} seconds\n` +
+        `${Math.floor(currentTime/60)} minutes ${currentTime%60} seconds\n\n` +
+        `Usage: /setautodelete <seconds>\n` +
+        `Example: /setautodelete 120 (2 minutes)\n` +
+        `Min: 10 | Max: 600 seconds`
+      );
+      return;
+    }
+    const time = parseInt(parts[1]);
+    if (isNaN(time) || time < 10 || time > 600) {
+      await sendPlain(chatId, "❌  Invalid time! Please enter between 10-600 seconds.\nExample: 120 = 2 minutes");
+      return;
+    }
+    await setAutoDeleteTime(time);
+    await sendPlain(chatId, 
+      `╔══════════════════════════╗\n║  ✅  AUTO-DELETE UPDATED   ║\n╠══════════════════════════╣\n` +
+      `⏰  New auto-delete time: ${time} seconds\n` +
+      `${Math.floor(time/60)} minutes ${time%60} seconds\n\n` +
+      `✅  All new messages will auto-delete after this time.\n` +
+      `╚══════════════════════════╝`
+    );
     return;
   }
 
@@ -2227,6 +2361,8 @@ async function start() {
   await initDb();
   await dbLoadChannels();
   await dbLoadApiUrls();
+  await getAutoDeleteTime(); // Load auto-delete time from DB
+  
   await setMyCommands([
     { command: "start",          description: "🏠 Main Menu" },
     { command: "num",            description: "📞 Number Lookup" },
@@ -2241,6 +2377,7 @@ async function start() {
     { command: "myrequests",     description: "📋 Check Your Requests" },
     { command: "apiurlmanager",  description: "🔗 API URL Manager (Admin)" },
     { command: "channelmanager", description: "📢 Channel Manager (Admin)" },
+    { command: "setautodelete",  description: "⏰ Set Auto-Delete Time (Admin)" },
   ]);
   if (WEBHOOK_URL) {
     const wh = `${WEBHOOK_URL}/webhook/${BOT_TOKEN}`;
