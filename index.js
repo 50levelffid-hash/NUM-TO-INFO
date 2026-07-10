@@ -17,7 +17,7 @@ const PORT        = process.env.PORT        || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
 const OWNER       = "@RTFGAMMING";
 
-// ── API URLs (dynamic — admin se change ho sakti hain) ──────────────────────
+// ── API URLs ──────────────────────────────────
 const DEFAULT_API_URLS = {
   num:     "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={query}&key=mysecretkey123",
   deep:    "https://leakapi.suryajasoos.workers.dev/?query=91{query}",
@@ -27,12 +27,8 @@ const DEFAULT_API_URLS = {
   vehicle: "https://vehicle.suryahacker.workers.dev/fetch?query={query}",
 };
 
-// Runtime mein yahi use hoga (DB se override hoga)
 let apiUrls = { ...DEFAULT_API_URLS };
 
-// API response display config — kaunsa field user ko dikhana hai
-// "raw" = pura response dikhao (default formatters use karo)
-// "field:xyz" = response ka xyz field dikhao
 const DEFAULT_API_RESPONSE_CONFIG = {
   num:     "raw",
   deep:    "raw",
@@ -43,7 +39,7 @@ const DEFAULT_API_RESPONSE_CONFIG = {
 };
 let apiResponseConfig = { ...DEFAULT_API_RESPONSE_CONFIG };
 
-// ── CHANNELS (dynamic, DB se load hoga) ───────
+// ── CHANNELS ──────────────────────────────────
 let CHANNELS = [
   { name: "🔥 RTF GAMING",  username: "RTFGAMING1",     id: null },
   { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0", id: null },
@@ -61,6 +57,8 @@ const customNumData = new Map();
 //  COIN & REFERRAL SYSTEM
 // ══════════════════════════════════════════════
 const referralCooldown = new Map();
+// Store referral attempts: referrerId -> { userId, timestamp, checked }
+const referralAttempts = new Map();
 
 async function getUserCoins(userId) {
   if (!usersCol) return 0;
@@ -464,7 +462,7 @@ const HELP_TEXT =
   "🚗  /vehicle <reg_number>\n   Example: /vehicle MH02FZ0555\n\n" +
   "💰  /coins - Check your coins\n" +
   "🔗  /refer - Get referral link\n" +
-  "📝  /request <type> <query> - Request data using coins\n" +
+  "📝  /request <type> <query> - Request data (1 coin)\n" +
   "📋  /myrequests - Check your requests\n\n" +
   "🏠 /start  ❓ /help\n╠══════════════════════════╣\n👑  Owner : @RTFGAMMING\n╚══════════════════════════╝";
 
@@ -500,7 +498,7 @@ function adminMenuKb() {
 }
 
 // ══════════════════════════════════════════════
-//  API URL MANAGER — TEXT + KEYBOARD (HTML VERSION)
+//  API URL MANAGER
 // ══════════════════════════════════════════════
 
 function apiUrlManagerTextHtml() {
@@ -590,7 +588,7 @@ function apiManagerText() {
 }
 
 // ══════════════════════════════════════════════
-//  FORMAT HELPERS
+//  FORMAT HELPERS - FIXED DEEP API
 // ══════════════════════════════════════════════
 
 function extractRecords(data) {
@@ -612,7 +610,6 @@ function extractRecords(data) {
   return records;
 }
 
-// ── FIXED formatNumResult ──
 function formatNumResult(records, number) {
   const colors = ["🔴","🟠","🟡","🟢","🔵"];
   let out =
@@ -631,7 +628,7 @@ function formatNumResult(records, number) {
   return out;
 }
 
-// ── FIXED parseDeepApiResponse ──
+// ── FIXED DEEP API PARSER ──
 function parseDeepApiResponse(data) {
   try {
     if (!data || !data.status || !data.data) return null;
@@ -642,32 +639,31 @@ function parseDeepApiResponse(data) {
     // Process source1 records
     if (sources.source1 && Array.isArray(sources.source1.records)) {
       for (const item of sources.source1.records) {
-        // Collect all phone numbers
+        // Collect all phone numbers - using proper property names
         const phones = [];
+        // Check all Phone fields (Phone, Phone2, Phone3, etc.)
         for (let i = 1; i <= 10; i++) {
-          const phone = item[`Phone${i}`];
+          const phoneKey = i === 1 ? 'Phone' : `Phone${i}`;
+          const phone = item[phoneKey];
           if (phone) phones.push(String(phone).trim());
         }
-        if (item.Phone) phones.push(String(item.Phone).trim());
         
         // Remove duplicates and filter
         const uniquePhones = [...new Set(phones)].filter(p => p && p.length > 5);
+        
+        // Get the main phone (first one or the one matching query)
+        const mainPhone = uniquePhones.length > 0 ? uniquePhones[0] : "N/A";
         
         records.push({
           name:    String(item.FullName || item.Name || "").trim(),
           fname:   String(item.FatherName || "").trim(),
           address: String(item.Adres || item.Adres2 || item.Adres3 || "").trim(),
           circle:  String(item.Region || "").trim(),
-          alt:     uniquePhones.length > 0 ? uniquePhones.join(", ") : "N/A",
+          alt:     uniquePhones.length > 1 ? uniquePhones.slice(1).join(", ") : "N/A",
           aadhar:  String(item.DocumentNumber || "").trim(),
           email:   String(item.Email || "").trim(),
-          age:     String(item.Age || "").trim(),
-          gender:  String(item.Gender || "").trim(),
-          dob:     String(item.DateOfBirth || "").trim(),
-          education: String(item.Education || "").trim(),
-          lastActivity: String(item.LastActivity || "").trim(),
-          registrationDate: String(item.RegistrationDate || "").trim(),
-          source: "source1"
+          phone:   mainPhone,
+          source:  "source1"
         });
       }
     }
@@ -675,25 +671,22 @@ function parseDeepApiResponse(data) {
     // Process source2 records
     if (sources.source2 && Array.isArray(sources.source2.records)) {
       for (const item of sources.source2.records) {
-        const phones = [];
-        if (item.Phone) phones.push(String(item.Phone).trim());
-        const uniquePhones = [...new Set(phones)].filter(p => p && p.length > 5);
-        
         records.push({
           name:    String(item.Name || "").trim(),
           fname:   "N/A",
           address: "N/A",
           circle:  "N/A",
-          alt:     uniquePhones.length > 0 ? uniquePhones.join(", ") : "N/A",
+          alt:     "N/A",
           aadhar:  "N/A",
           email:   "N/A",
+          phone:   String(item.Phone || "").trim(),
           age:     String(item.Age || "").trim(),
           gender:  String(item.Gender || "").trim(),
           dob:     String(item.DateOfBirth || "").trim(),
           education: String(item.Education || "").trim(),
           lastActivity: String(item.LastActivity || "").trim(),
           registrationDate: String(item.RegistrationDate || "").trim(),
-          source: "source2"
+          source:  "source2"
         });
       }
     }
@@ -705,7 +698,7 @@ function parseDeepApiResponse(data) {
   }
 }
 
-// ── FIXED formatDeepResult ──
+// ── FIXED DEEP FORMATTER ──
 function formatDeepResult(records, queryNumber) {
   if (!records || !records.length) return null;
   const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
@@ -713,20 +706,24 @@ function formatDeepResult(records, queryNumber) {
     `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
     `│  🕵️  D E E P   I N T E L   │\n` +
     `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-    `🔢  Query : ${escMd(queryNumber)}\n\n`;
+    `🔢  Query : ${escMd(queryNumber)}\n📊  Records : ${records.length} found\n\n`;
   
   records.forEach((rec, i) => {
     const dot = colors[i % colors.length];
-    text += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
+    const sourceLabel = rec.source === 'source1' ? '📀 HiTeckGroop' : '🪪 KaushalbHarat';
+    text += `${dot}━━━ RECORD ${i+1} ━━━ ${sourceLabel} ${dot}\n`;
     if (rec.name)    text += `${cbMd("👤 Name   ", rec.name)}\n`;
     if (rec.fname && rec.fname !== "N/A")   text += `${cbMd("👨 Father ", rec.fname)}\n`;
-    if (rec.alt && rec.alt !== "N/A")     text += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
+    if (rec.phone && rec.phone !== "N/A")   text += `${cbMd("📞 Phone  ", rec.phone)}\n`;
+    if (rec.alt && rec.alt !== "N/A")       text += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
     if (rec.address && rec.address !== "N/A") text += `${cbMd("📍 Address", rec.address)}\n`;
     if (rec.circle && rec.circle !== "N/A")  text += `${cbMd("📡 Circle ", rec.circle)}\n`;
     if (rec.aadhar && rec.aadhar !== "N/A")  text += `${cbMd("🪪 Aadhar ", rec.aadhar)}\n`;
-    if (rec.age && rec.age !== "N/A")    text += `${cbMd("🎂 Age    ", rec.age)}\n`;
-    if (rec.gender && rec.gender !== "N/A") text += `${cbMd("⚧ Gender ", rec.gender)}\n`;
-    if (rec.dob && rec.dob !== "N/A")    text += `${cbMd("📅 DOB    ", rec.dob)}\n`;
+    if (rec.email && rec.email !== "N/A")    text += `${cbMd("✉️  Email  ", rec.email)}\n`;
+    // Source2 specific fields
+    if (rec.age && rec.age !== "N/A")        text += `${cbMd("🎂 Age    ", rec.age)}\n`;
+    if (rec.gender && rec.gender !== "N/A")  text += `${cbMd("⚧ Gender ", rec.gender)}\n`;
+    if (rec.dob && rec.dob !== "N/A")        text += `${cbMd("📅 DOB    ", rec.dob)}\n`;
     if (rec.education && rec.education !== "N/A") text += `${cbMd("🎓 Education", rec.education)}\n`;
     if (rec.lastActivity && rec.lastActivity !== "N/A") text += `${cbMd("🕐 Last Activity", rec.lastActivity)}\n`;
     if (rec.registrationDate && rec.registrationDate !== "N/A") text += `${cbMd("📋 Registered", rec.registrationDate)}\n`;
@@ -736,12 +733,11 @@ function formatDeepResult(records, queryNumber) {
   return text;
 }
 
-// ── FIXED formatAdharResult ──
+// ── FIXED ADHAR FORMATTER ──
 function formatAdharResult(data, adharNumber) {
   try {
     if (!data || !data[0]) return null;
     
-    // Skip developer field and get all records
     const records = [];
     for (const key of Object.keys(data)) {
       if (key === "developer" || key === "timestamp" || key === "owner" || key === "credit") continue;
@@ -1044,7 +1040,6 @@ async function fetchNumApi(cleanPhone) {
   } catch (e) { console.error("[NUM API]", e.message); return []; }
 }
 
-// ── UPDATED fetchDeepApi with 91 handling ──
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
   let clean = String(number).replace(/[+\s]/g, "").replace(/^\+91/, "");
@@ -1213,7 +1208,6 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
   }
 }
 
-// ── UPDATED handleAdhar ──
 async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
   if (!apiToggle.adhar.enabled) {
     await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.adhar.offMsg}`);
@@ -1301,10 +1295,11 @@ async function handleCoins(chatId, userId) {
     `🪙  Total Coins : ${coins}\n\n` +
     `📝  Use /request <type> <query> to request data\n` +
     `   Types: num, tg, adhar, upi, vehicle\n` +
-    `   Cost: 5 coins per request\n\n` +
+    `   Cost: 1 coin per request\n\n` +
     `🔗  Use /refer to get your referral link\n` +
     `   Each referral = 1 coin\n` +
     `   (Max 2 referrals per minute)\n` +
+    `   ⚠️  Referral valid only if user joins all channels\n` +
     `╚══════════════════════════╝`
   );
 }
@@ -1320,7 +1315,8 @@ async function handleRefer(chatId, from) {
     `📤  Apna referral link share karo:\n\n${link}\n\n` +
     `🪙  Current Coins : ${coins}\n` +
     `✅  Per referral = 1 coin\n` +
-    `⚡  Limit: 2 referrals per minute\n\n` +
+    `⚡  Limit: 2 referrals per minute\n` +
+    `⚠️  Referral valid only if user joins all channels\n\n` +
     `📌  Naye user ko start karna hai bot se\n` +
     `╚══════════════════════════╝`
   );
@@ -1328,14 +1324,47 @@ async function handleRefer(chatId, from) {
 
 async function handleReferralStart(userId, referrerId) {
   if (userId === referrerId) return;
+  
+  // Check if referrer can get coins (rate limit)
   if (!canRefer(referrerId)) {
     console.log(`[REFERRAL] ${referrerId} rate limited`);
     return;
   }
+  
+  // Check if user has joined all channels
+  const hasJoined = await checkJoin(userId);
+  if (!hasJoined) {
+    // Store attempt for later verification
+    referralAttempts.set(referrerId, { userId, timestamp: Date.now(), checked: false });
+    await sendPlain(referrerId, 
+      `⚠️  ${userId} ne aapka referral use kiya, lekin abhi tak channels join nahi kiye.\n` +
+      `✅  Jab wo channels join karega, tab coin milega.`
+    );
+    return;
+  }
+  
   await addUserCoins(referrerId, 1);
   const user = await tgApiGet("getChat", { chat_id: userId });
   const name = user?.first_name || "Someone";
-  await sendPlain(referrerId, `🎉  ${name} ne aapka referral use kiya!\n🪙  +1 coin mil gaya!`);
+  await sendPlain(referrerId, `🎉  ${name} ne aapka referral use kiya aur channels join kiye!\n🪙  +1 coin mil gaya!`);
+}
+
+// Check referral attempts when user verifies join
+async function checkPendingReferrals(userId) {
+  for (const [referrerId, data] of referralAttempts) {
+    if (data.userId === userId && !data.checked) {
+      const hasJoined = await checkJoin(userId);
+      if (hasJoined) {
+        data.checked = true;
+        if (canRefer(referrerId)) {
+          await addUserCoins(referrerId, 1);
+          const user = await tgApiGet("getChat", { chat_id: userId });
+          const name = user?.first_name || "Someone";
+          await sendPlain(referrerId, `🎉  ${name} ne channels join kar liye!\n🪙  +1 coin mil gaya! (Pending referral)`);
+        }
+      }
+    }
+  }
 }
 
 async function handleRequest(chatId, text, from, userMsgId = null) {
@@ -1346,7 +1375,7 @@ async function handleRequest(chatId, text, from, userMsgId = null) {
       `Types: num, tg, adhar, upi, vehicle\n` +
       `Example: /request num 9876543210\n` +
       `Example: /request tg rtfgamming\n\n` +
-      `Cost: 5 coins per request`
+      `Cost: 1 coin per request`
     );
     return;
   }
@@ -1360,54 +1389,61 @@ async function handleRequest(chatId, text, from, userMsgId = null) {
   }
   
   const coins = await getUserCoins(from.id);
-  if (coins < 5) {
+  if (coins < 1) {
     await sendPlain(chatId,
       `╔══════════════════════════╗\n║  ❌  INSUFFICIENT COINS   ║\n╠══════════════════════════╣\n` +
-      `🪙  Required: 5 coins\n🪙  You have: ${coins} coins\n\n` +
+      `🪙  Required: 1 coin\n🪙  You have: ${coins} coins\n\n` +
       `🔗  Use /refer to earn more coins!\n` +
       `╚══════════════════════════╝`
     );
     return;
   }
   
-  if (!await deductUserCoins(from.id, 5)) {
+  if (!await deductUserCoins(from.id, 1)) {
     await sendPlain(chatId, "❌  Coin deduction failed. Try again.");
     return;
   }
   
-  const request = await createRequest(from.id, type, query, 5);
+  const request = await createRequest(from.id, type, query, 1);
   if (!request) {
-    await addUserCoins(from.id, 5);
-    await sendPlain(chatId, "❌  Request create nahi ho paya. Coins return kar diye.");
+    await addUserCoins(from.id, 1);
+    await sendPlain(chatId, "❌  Request create nahi ho paya. Coin return kar diya.");
     return;
   }
   
   await sendPlain(chatId,
     `╔══════════════════════════╗\n║  ✅  REQUEST SENT         ║\n╠══════════════════════════╣\n` +
-    `📝  Type  : ${type}\n🔍  Query : ${query}\n🪙  Cost  : 5 coins\n` +
+    `📝  Type  : ${type}\n🔍  Query : ${query}\n🪙  Cost  : 1 coin\n` +
     `📊  Status: PENDING\n\n` +
     `⏳  Admin approve karega\n📋  /myrequests se check karo\n` +
     `╚══════════════════════════╝`
   );
   
+  // Create inline keyboard for admin
+  const adminKb = {
+    inline_keyboard: [
+      [
+        { text: "✅ Approve", callback_data: `approve_req_${request._id.toString()}` },
+        { text: "❌ Reject", callback_data: `reject_req_${request._id.toString()}` }
+      ]
+    ]
+  };
+  
   const adminMsg = 
     `╔══════════════════════════╗\n║  📝  NEW REQUEST          ║\n╠══════════════════════════╣\n` +
     `👤  User  : ${from.first_name || "Unknown"} (@${from.username || "no username"})\n` +
     `🆔  ID    : ${from.id}\n` +
-    `📝  Type  : ${type}\n🔍  Query : ${query}\n🪙  Coins : 5\n` +
+    `📝  Type  : ${type}\n🔍  Query : ${query}\n🪙  Coins : 1\n` +
     `📊  Status: PENDING\n` +
-    `╠══════════════════════════╣\n` +
-    `/approve ${request._id.toString()} - Approve\n` +
-    `/reject ${request._id.toString()} - Reject\n` +
     `╚══════════════════════════╝`;
   
   for (const admin of admins) {
     const adminUsername = admin.replace("@", "");
     const adminChat = await tgApiGet("getChat", { chat_id: admin });
     if (adminChat) {
-      await sendPlain(adminChat.id, adminMsg);
+      await sendPlain(adminChat.id, adminMsg, { reply_markup: adminKb });
     } else {
-      await sendPlain(`@${adminUsername}`, adminMsg);
+      await sendPlain(`@${adminUsername}`, adminMsg, { reply_markup: adminKb });
     }
   }
 }
@@ -1521,6 +1557,97 @@ async function handleCallback(cb) {
       await answerCallback(cb.id);
       const kb = _isAdmin ? adminMenuKb() : mainMenuKb();
       await tgApi("editMessageText", { chat_id: chatId, message_id: msgId, text: MAIN_MENU_TEXT, reply_markup: kb });
+      // Check pending referrals
+      await checkPendingReferrals(from.id);
+    }
+    return;
+  }
+
+  // ── APPROVE/REJECT REQUEST FROM BUTTON ──
+  if (data.startsWith("approve_req_") || data.startsWith("reject_req_")) {
+    if (!_isAdmin) {
+      await answerCallback(cb.id, "❌  Only admin can do this!", true);
+      return;
+    }
+    const isApprove = data.startsWith("approve_req_");
+    const requestId = data.replace(isApprove ? "approve_req_" : "reject_req_", "");
+    
+    try {
+      const requests = await getPendingRequests();
+      const req = requests.find(r => r._id.toString() === requestId);
+      if (!req) {
+        await answerCallback(cb.id, "❌  Request nahi mili.", true);
+        return;
+      }
+      
+      if (isApprove) {
+        await updateRequestStatus(req._id, 'approved');
+        await answerCallback(cb.id, "✅  Request approved!", false);
+        await tgApi("editMessageText", { 
+          chat_id: chatId, 
+          message_id: msgId,
+          text: cb.message.text + "\n\n✅ APPROVED by admin"
+        });
+        
+        let result = "Data fetch failed.";
+        try {
+          if (req.type === 'num') {
+            const records = await fetchNumApi(req.query);
+            if (records.length) result = formatNumResult(records, req.query);
+          } else if (req.type === 'tg') {
+            const data2 = await fetchTgApi(req.query);
+            if (data2) result = `TG ID: ${data2.tgId}\nPhone: ${data2.phone}`;
+          } else if (req.type === 'adhar') {
+            const data2 = await apiFetch(buildUrl("adhar", req.query));
+            if (data2) result = formatAdharResult(data2, req.query) || "Data found but format error";
+          } else if (req.type === 'upi') {
+            const data2 = await apiFetch(buildUrl("upi", req.query));
+            if (data2) result = formatUpiResult(data2, req.query);
+          } else if (req.type === 'vehicle') {
+            const data2 = await apiFetch(buildUrl("vehicle", req.query));
+            if (data2) result = formatVehicleResult(data2);
+          }
+        } catch (e) {
+          result = `Error: ${e.message}`;
+        }
+        
+        await updateRequestStatus(req._id, 'approved', result);
+        
+        if (result && result !== "Data fetch failed.") {
+          await sendPlain(req.user_id, 
+            `╔══════════════════════════╗\n║  ✅  REQUEST APPROVED     ║\n╠══════════════════════════╣\n` +
+            `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
+            `📄  Result:\n${result}\n` +
+            `╚══════════════════════════╝`
+          );
+        } else {
+          await sendPlain(req.user_id, 
+            `╔══════════════════════════╗\n║  ❌  REQUEST FAILED       ║\n╠══════════════════════════╣\n` +
+            `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
+            `⚠️  Data fetch failed. Coin return kar diya.\n` +
+            `╚══════════════════════════╝`
+          );
+          await addUserCoins(req.user_id, 1);
+        }
+      } else {
+        await updateRequestStatus(req._id, 'rejected');
+        await addUserCoins(req.user_id, req.coins_used || 1);
+        await answerCallback(cb.id, "❌  Request rejected. Coin returned.", false);
+        await tgApi("editMessageText", { 
+          chat_id: chatId, 
+          message_id: msgId,
+          text: cb.message.text + "\n\n❌ REJECTED by admin"
+        });
+        await sendPlain(req.user_id,
+          `╔══════════════════════════╗\n║  ❌  REQUEST REJECTED     ║\n╠══════════════════════════╣\n` +
+          `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
+          `🪙  1 coin wapas aa gaya.\n` +
+          `╚══════════════════════════╝`
+        );
+      }
+    } catch (e) {
+      console.error("[APPROVE/REJECT]", e.message);
+      await answerCallback(cb.id, `❌  Error: ${e.message}`, true);
     }
     return;
   }
@@ -1696,7 +1823,7 @@ async function handleCallback(cb) {
       text += `   👤 User: ${req.user_id}\n`;
       text += `   🪙 Coins: ${req.coins_used}\n`;
       text += `   📅 ${(req.created_at || "").slice(0,10)}\n`;
-      text += `   /approve_${req._id.toString().slice(0,8)} /reject_${req._id.toString().slice(0,8)}\n\n`;
+      text += `   Use buttons on request message\n\n`;
     });
     text += `╚══════════════════════════╝`;
     await sendPlain(chatId, text);
@@ -1717,7 +1844,7 @@ async function handleCallback(cb) {
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
       "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
       "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n" +
-      "🔗 /apiurlmanager  📢 /channelmanager\n📝 /pending  - Check pending requests\n" +
+      "🔗 /apiurlmanager  📢 /channelmanager\n📝 Pending requests in admin panel\n" +
       "╚══════════════════════════╝"
     );
     return;
@@ -1742,7 +1869,7 @@ async function handleUpdate(update) {
 
     if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin",
         "/setcustomtg","/delcustomtg","/setcustomnum","/delcustomnum","/listcustom","/dbbackup",
-        "/apimanager","/apiurlmanager","/channelmanager","/pending","/approve_","/reject_"]
+        "/apimanager","/apiurlmanager","/channelmanager","/pending"]
         .some(c => text.toLowerCase().startsWith(c))) {
       return await handleAdminText(chatId, from.id, text);
     }
@@ -1912,80 +2039,6 @@ async function handleAdminText(chatId, userId, text) {
     return;
   }
 
-  if (lower.startsWith("/approve_") || lower.startsWith("/reject_")) {
-    const isApprove = lower.startsWith("/approve_");
-    const idStr = lower.replace(isApprove ? "/approve_" : "/reject_", "").trim();
-    try {
-      const requestId = idStr;
-      const requests = await getPendingRequests();
-      const req = requests.find(r => r._id.toString() === requestId || r._id.toString().startsWith(requestId));
-      if (!req) {
-        await sendPlain(chatId, "❌  Request nahi mili.");
-        return;
-      }
-      
-      if (isApprove) {
-        await updateRequestStatus(req._id, 'approved');
-        await sendPlain(chatId, `✅  Request approved!`);
-        
-        let result = "Data fetch failed.";
-        try {
-          if (req.type === 'num') {
-            const records = await fetchNumApi(req.query);
-            if (records.length) result = formatNumResult(records, req.query);
-          } else if (req.type === 'tg') {
-            const data = await fetchTgApi(req.query);
-            if (data) result = `TG ID: ${data.tgId}\nPhone: ${data.phone}`;
-          } else if (req.type === 'adhar') {
-            const data = await apiFetch(buildUrl("adhar", req.query));
-            if (data) result = formatAdharResult(data, req.query) || "Data found but format error";
-          } else if (req.type === 'upi') {
-            const data = await apiFetch(buildUrl("upi", req.query));
-            if (data) result = formatUpiResult(data, req.query);
-          } else if (req.type === 'vehicle') {
-            const data = await apiFetch(buildUrl("vehicle", req.query));
-            if (data) result = formatVehicleResult(data);
-          }
-        } catch (e) {
-          result = `Error: ${e.message}`;
-        }
-        
-        await updateRequestStatus(req._id, 'approved', result);
-        
-        if (result && result !== "Data fetch failed.") {
-          await sendPlain(req.user_id, 
-            `╔══════════════════════════╗\n║  ✅  REQUEST APPROVED     ║\n╠══════════════════════════╣\n` +
-            `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
-            `📄  Result:\n${result}\n` +
-            `╚══════════════════════════╝`
-          );
-        } else {
-          await sendPlain(req.user_id, 
-            `╔══════════════════════════╗\n║  ❌  REQUEST FAILED       ║\n╠══════════════════════════╣\n` +
-            `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
-            `⚠️  Data fetch failed. Coins return kar diye.\n` +
-            `╚══════════════════════════╝`
-          );
-          await addUserCoins(req.user_id, 5);
-        }
-      } else {
-        await updateRequestStatus(req._id, 'rejected');
-        await addUserCoins(req.user_id, req.coins_used || 5);
-        await sendPlain(chatId, `❌  Request rejected. Coins returned to user.`);
-        await sendPlain(req.user_id,
-          `╔══════════════════════════╗\n║  ❌  REQUEST REJECTED     ║\n╠══════════════════════════╣\n` +
-          `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
-          `🪙  ${req.coins_used || 5} coins wapas aa gaye.\n` +
-          `╚══════════════════════════╝`
-        );
-      }
-    } catch (e) {
-      console.error("[APPROVE/REJECT]", e.message);
-      await sendPlain(chatId, `❌  Error: ${e.message}`);
-    }
-    return;
-  }
-
   if (lower === "/pending") {
     const requests = await getPendingRequests();
     if (!requests.length) {
@@ -1998,7 +2051,7 @@ async function handleAdminText(chatId, userId, text) {
       text += `   👤 User: ${req.user_id}\n`;
       text += `   🪙 Coins: ${req.coins_used}\n`;
       text += `   📅 ${(req.created_at || "").slice(0,10)}\n`;
-      text += `   /approve_${req._id.toString().slice(0,8)} /reject_${req._id.toString().slice(0,8)}\n\n`;
+      text += `   Use buttons on request message\n\n`;
     });
     text += `╚══════════════════════════╝`;
     await sendPlain(chatId, text);
@@ -2184,7 +2237,7 @@ async function start() {
     { command: "help",           description: "❓ Help Guide" },
     { command: "coins",          description: "💰 Check Your Coins" },
     { command: "refer",          description: "🔗 Get Referral Link" },
-    { command: "request",        description: "📝 Request Data Using Coins" },
+    { command: "request",        description: "📝 Request Data (1 coin)" },
     { command: "myrequests",     description: "📋 Check Your Requests" },
     { command: "apiurlmanager",  description: "🔗 API URL Manager (Admin)" },
     { command: "channelmanager", description: "📢 Channel Manager (Admin)" },
