@@ -25,7 +25,7 @@ const AUTO_DELETE_KEY = "auto_delete_time";
 const DEFAULT_API_URLS = {
   num:     "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={query}&key=mysecretkey123",
   deep:    "https://leakapi.suryajasoos.workers.dev/?query=91{query}",
-  tg:      "https://username2num.suryajasoos.workers.dev/?id={query}",
+  tg:      "https://api.onaiword.com/api?id={query}",
   adhar:   "https://aadharinfo.suryahacker.workers.dev/?aadhar={query}",
   upi:     "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={query}",
   vehicle: "https://vehicle.suryahacker.workers.dev/fetch?query={query}",
@@ -527,6 +527,7 @@ const HELP_TEXT =
   "🪪  /adhar <aadhaar_no>\n   Example: /adhar 598229659586\n\n" +
   "💳  /upi <upi_id>\n   Example: /upi 70497398@axl\n\n" +
   "🚗  /vehicle <reg_number>\n   Example: /vehicle MH02FZ0555\n\n" +
+  "🔬  /deep <number>\n   Example: /deep 9876543210\n   (Sirf deep data)\n\n" +
   "💰  /coins - Check your coins\n" +
   "🔗  /refer - Get referral link\n" +
   "📝  /request <type> <query> - Request data (1 coin)\n" +
@@ -540,6 +541,7 @@ function mainMenuKb() {
     [{ text: "🪪 Aadhaar Lookup", callback_data: "menu_adhar" }],
     [{ text: "💳 UPI Lookup", callback_data: "menu_upi" }],
     [{ text: "🚗 Vehicle Lookup", callback_data: "menu_vehicle" }],
+    [{ text: "🔬 Deep Intel", callback_data: "menu_deep" }],
     [{ text: "💰 Coins", callback_data: "menu_coins" }, { text: "🔗 Refer", callback_data: "menu_refer" }],
     [{ text: "❓ Help", callback_data: "menu_help" }, { text: "👑 Owner", callback_data: "menu_owner" }],
   ]};
@@ -551,6 +553,7 @@ function adminMenuKb() {
     [{ text: "🪪 Aadhaar Lookup", callback_data: "menu_adhar" }],
     [{ text: "💳 UPI Lookup", callback_data: "menu_upi" }],
     [{ text: "🚗 Vehicle Lookup", callback_data: "menu_vehicle" }],
+    [{ text: "🔬 Deep Intel", callback_data: "menu_deep" }],
     [{ text: "💰 Coins", callback_data: "menu_coins" }, { text: "🔗 Refer", callback_data: "menu_refer" }],
     [{ text: "❓ Help", callback_data: "menu_help" }, { text: "👑 Owner", callback_data: "menu_owner" }],
     [{ text: "📢 Broadcast", callback_data: "menu_broadcast" }, { text: "👥 Users Count", callback_data: "menu_users" }],
@@ -702,7 +705,6 @@ function parseDeepApiResponse(data) {
   try {
     if (!data) return null;
     
-    // Try to extract data from various formats
     let records = [];
     
     // Format 1: Direct array with objects
@@ -842,8 +844,7 @@ function formatDeepResult(records, queryNumber) {
   
   records.forEach((rec, i) => {
     const dot = colors[i % colors.length];
-    const sourceLabel = rec.source === 'source1' ? '📀 HiTeckGroop' : '🪪 KaushalbHarat';
-    text += `${dot}━━━ RECORD ${i+1} ━━━ ${sourceLabel} ${dot}\n`;
+    text += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
     if (rec.name && rec.name !== "N/A" && rec.name !== "")    
       text += `${cbMd("👤 Name   ", rec.name)}\n`;
     if (rec.fname && rec.fname !== "N/A" && rec.fname !== "")   
@@ -876,6 +877,46 @@ function formatDeepResult(records, queryNumber) {
   });
   text += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  |  ⚡ DEEP INTEL`;
   return text;
+}
+
+// ── FIXED TG API PARSER ──
+function parseTgApiResponse(data) {
+  try {
+    if (!data) return null;
+    
+    // New API format: {"developer":"@apimakergast","response":{"data":[{"country":"India","country_code":"+91","number":"8401560285","user_id":"6346250222"}],"parameters":{"service":"Telegram to Number","success":true,"value":"rtfgamming"}}}
+    if (data.response && data.response.data && Array.isArray(data.response.data)) {
+      const item = data.response.data[0];
+      if (item) {
+        return {
+          tgId: String(item.user_id || "").trim(),
+          phone: String(item.number || "").trim(),
+          country: String(item.country || "").trim(),
+          countryCode: String(item.country_code || "").trim(),
+          success: data.response.parameters?.success || false,
+          username: data.response.parameters?.value || ""
+        };
+      }
+    }
+    
+    // Old format fallback
+    if (data.result && typeof data.result === "object") {
+      const res = data.result;
+      return {
+        tgId: String(res.tg_id || res.id || "").trim(),
+        phone: String(res.number || res.phone || "").trim(),
+        country: String(res.country || "").trim(),
+        countryCode: String(res.country_code || "").trim(),
+        success: data.success !== false,
+        username: data.username || ""
+      };
+    }
+    
+    return null;
+  } catch (e) {
+    console.error("[parseTgApiResponse]", e.message);
+    return null;
+  }
 }
 
 // ── FIXED ADHAR FORMATTER ──
@@ -1202,15 +1243,7 @@ async function fetchDeepApi(number) {
 async function fetchTgApi(term) {
   try {
     const data = await apiFetch(buildUrl("tg", term), 30000);
-    if (!data || data.success === false) return null;
-    const phone = data.number ? String(data.number).trim() : null;
-    if (!phone || ["","N/A","null","None","undefined","0"].includes(phone)) return null;
-    return {
-      tgId:        String(data.tg_id        || "N/A").trim(),
-      phone:       phone,
-      country:     String(data.country      || "N/A").trim(),
-      countryCode: String(data.country_code || "N/A").trim(),
-    };
+    return data || null;
   } catch (e) { console.error("[TG API]", e.message); return null; }
 }
 
@@ -1262,6 +1295,36 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
   }
 }
 
+// ── DEEP ONLY HANDLER ──
+async function handleDeepOnly(chatId, number, userMsgId = null, userId = null) {
+  if (!apiToggle.deep.enabled) {
+    await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  DEEP API OFF   ║\n╚══════════════════╝\n${apiToggle.deep.offMsg}`);
+    return;
+  }
+  
+  const statusMsg = await sendPlain(chatId, `🔬  Deep searching: ${number} ...`);
+  try {
+    const clean = number.trim().replace(/[+\s]/g,"");
+    const deepApiRaw = await fetchDeepApi(clean);
+    deleteMessage(chatId, statusMsg.message_id);
+    
+    const deepRecords = parseDeepApiResponse(deepApiRaw);
+    const deepFmt = formatDeepResult(deepRecords, clean);
+    
+    if (!deepFmt) {
+      await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ NO DEEP DATA  ║\n╚══════════════════╝\n🔬  Number: ${clean}\n⚠️  Deep intel nahi mila`);
+      return;
+    }
+    
+    if (userId) dbIncrSearch(userId);
+    await sendDataFound(chatId, userMsgId, deepFmt);
+  } catch (e) {
+    console.error("[DEEP ONLY]", e.message);
+    deleteMessage(chatId, statusMsg.message_id);
+    await sendPlain(chatId, "❌  API Error / Timeout.");
+  }
+}
+
 async function handleTg(chatId, term, userMsgId = null, userId = null) {
   const rawInput = term.trim();
   term = rawInput.replace(/^@/, "");
@@ -1283,7 +1346,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
   }
   const statusMsg = await sendPlain(chatId, `🔍  Searching TG: ${term} ...`);
   try {
-    const rawData = await apiFetch(buildUrl("tg", term), 30000);
+    const rawData = await fetchTgApi(term);
     deleteMessage(chatId, statusMsg.message_id);
 
     const customFmt = applyResponseConfig("tg", rawData, term);
@@ -1293,21 +1356,9 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
       return;
     }
 
-    let tgId = null, phone = null, country = null, countryCode = null;
-    if (rawData && rawData.result && typeof rawData.result === "object") {
-      const res = rawData.result;
-      tgId = String(res.tg_id || res.id || "").trim();
-      phone = String(res.number || res.phone || "").trim();
-      country = String(res.country || "").trim();
-      countryCode = String(res.country_code || "").trim();
-    } else {
-      tgId = String(rawData.id || rawData.tg_id || "").trim();
-      phone = String(rawData.number || rawData.phone || "").trim();
-      country = String(rawData.country || "").trim();
-      countryCode = String(rawData.country_code || "").trim();
-    }
-
-    if (!phone && !tgId) {
+    const parsed = parseTgApiResponse(rawData);
+    
+    if (!parsed || !parsed.phone) {
       await sendDataNotFound(chatId, userMsgId,
         `╔══════════════════════╗\n║  ❌ DATA NOT FOUND    ║\n╠══════════════════════╣\n🔎  Input : ${term}\n⚠️  Koi information nahi mili\n╚══════════════════════╝`
       );
@@ -1319,19 +1370,18 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
     const isUserId = /^\d{5,}$/.test(term);
     let tgBlock =
       `┌─────────────────────────┐\n│  🔎  TG LOOKUP           │\n├─────────────────────────┤\n`;
-    if (!isUserId) {
-      const displayUsername = rawInput.startsWith("@") ? rawInput : `@${term}`;
-      tgBlock += `${cbMd("💻 Username    ", displayUsername)}\n`;
+    if (!isUserId && parsed.username) {
+      tgBlock += `${cbMd("💻 Username    ", parsed.username)}\n`;
     }
     tgBlock +=
-      `${cbMd("🆔 Telegram ID ", tgId || "N/A")}\n` +
-      `${cbMd("📞 Number      ", phone || "N/A")}\n` +
-      `${cbMd("🌍 Country     ", country || "N/A")}\n` +
-      `${cbMd("📱 Country Code", countryCode || "N/A")}\n` +
+      `${cbMd("🆔 Telegram ID ", parsed.tgId || "N/A")}\n` +
+      `${cbMd("📞 Number      ", parsed.phone || "N/A")}\n` +
+      `${cbMd("🌍 Country     ", parsed.country || "N/A")}\n` +
+      `${cbMd("📱 Country Code", parsed.countryCode || "N/A")}\n` +
       `└─────────────────────────┘\n`;
 
-    if (phone && !["N/A",""].includes(phone)) {
-      let cleanPhone = phone.replace(/[+\s]/g, "").replace(/^91/, "");
+    if (parsed.phone && !["N/A",""].includes(parsed.phone)) {
+      let cleanPhone = parsed.phone.replace(/[+\s]/g, "").replace(/^91/, "");
       if (cleanPhone.length > 10) cleanPhone = cleanPhone.slice(-10);
       if (cleanPhone.length >= 10) {
         const [numRes, deepApiRaw] = await Promise.all([
@@ -1758,7 +1808,8 @@ async function handleCallback(cb) {
             if (records.length) result = formatNumResult(records, req.query);
           } else if (req.type === 'tg') {
             const data2 = await fetchTgApi(req.query);
-            if (data2) result = `TG ID: ${data2.tgId}\nPhone: ${data2.phone}`;
+            const parsed = parseTgApiResponse(data2);
+            if (parsed) result = `TG ID: ${parsed.tgId}\nPhone: ${parsed.phone}`;
           } else if (req.type === 'adhar') {
             const data2 = await apiFetch(buildUrl("adhar", req.query));
             if (data2) result = formatAdharResult(data2, req.query) || "Data found but format error";
@@ -1945,10 +1996,11 @@ async function handleCallback(cb) {
     menu_adhar:   "╔══════════════════════╗\n║  🪪  AADHAAR LOOKUP  ║\n╚══════════════════════╝\n📥  Aadhaar number bhejo:\n📌 Example: 598229659586",
     menu_upi:     "╔══════════════════════╗\n║  💳  UPI LOOKUP      ║\n╚══════════════════════╝\n📥  UPI ID bhejo:\n📌 Example: 70497398@axl",
     menu_vehicle: "╔══════════════════════╗\n║  🚗  VEHICLE LOOKUP  ║\n╚══════════════════════╝\n📥  Vehicle number bhejo:\n📌 Example: MH02FZ0555",
+    menu_deep:    "╔══════════════════════╗\n║  🔬  DEEP INTEL ONLY  ║\n╚══════════════════════╝\n📥  Number bhejo:\n📌 Example: 9876543210\n   (Sirf deep data aayega)",
     menu_coins:   "💰  /coins se check karo",
     menu_refer:   "🔗  /refer se referral link lo",
   };
-  const stateMap = { menu_number:"number", menu_tg:"tg", menu_adhar:"adhar", menu_upi:"upi", menu_vehicle:"vehicle", menu_coins:"coins", menu_refer:"refer" };
+  const stateMap = { menu_number:"number", menu_tg:"tg", menu_adhar:"adhar", menu_upi:"upi", menu_vehicle:"vehicle", menu_deep:"deep", menu_coins:"coins", menu_refer:"refer" };
 
   if (stateMap[data]) { 
     userState.set(from.id, stateMap[data]); 
@@ -2185,6 +2237,7 @@ async function handleUpdate(update) {
     else if (choice === "adhar")   { await handleAdhar(chatId, text, msgId, from.id); }
     else if (choice === "upi")     { await handleUpi(chatId, text, msgId, from.id); }
     else if (choice === "vehicle") { await handleVehicle(chatId, text, msgId, from.id); }
+    else if (choice === "deep")    { await handleDeepOnly(chatId, text, msgId, from.id); }
     else if (choice === "coins")   { await handleCoins(chatId, from.id); }
     else if (choice === "refer")   { await handleRefer(chatId, from); }
     else if (choice === "setcustomtg_step1" && _isAdmin) {
@@ -2419,6 +2472,7 @@ async function handleCommand(msg) {
   else if (cmd === "adhar")   { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /adhar <aadhaar_number>"); return; } await handleAdhar(chatId, args.trim(), msgId, from.id); }
   else if (cmd === "upi")     { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /upi <upi_id>"); return; } await handleUpi(chatId, args.trim(), msgId, from.id); }
   else if (cmd === "vehicle") { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /vehicle <reg_number>"); return; } await handleVehicle(chatId, args.trim(), msgId, from.id); }
+  else if (cmd === "deep")    { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /deep <number>"); return; } await handleDeepOnly(chatId, args.trim(), msgId, from.id); }
   else if (_isAdm)            { await handleAdminText(chatId, from.id, text); }
 }
 
@@ -2452,6 +2506,7 @@ async function start() {
     { command: "adhar",          description: "🪪 Aadhaar Lookup" },
     { command: "upi",            description: "💳 UPI ID Lookup" },
     { command: "vehicle",        description: "🚗 Vehicle Lookup" },
+    { command: "deep",           description: "🔬 Deep Intel Only" },
     { command: "help",           description: "❓ Help Guide" },
     { command: "coins",          description: "💰 Check Your Coins" },
     { command: "refer",          description: "🔗 Get Referral Link" },
