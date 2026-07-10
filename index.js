@@ -1,4 +1,623 @@
-  Number  : ${escMd(number)}\n📊  Records : ${Math.min(records.length,5)} found\n\n`;
+"use strict";
+
+const express         = require("express");
+const fetch           = require("node-fetch");
+const FormData        = require("form-data");
+const { MongoClient } = require("mongodb");
+const http            = require("http");
+const https           = require("https");
+
+const app = express();
+app.use(express.json({ limit: "1mb" }));
+
+// ── CONFIG ──────────────────────────────────
+const BOT_TOKEN   = process.env.BOT_TOKEN   || "";
+const MONGO_URI   = process.env.MONGO_URI   || "";
+const PORT        = process.env.PORT        || 3000;
+const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
+const OWNER       = "@RTFGAMMING";
+
+// ── API URLs (dynamic — admin se change ho sakti hain) ──────────────────────
+const DEFAULT_API_URLS = {
+  num:     "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={query}&key=mysecretkey123",
+  deep:    "https://leakapi.suryajasoos.workers.dev/?query=91{query}",
+  tg:      "https://username2num.suryajasoos.workers.dev/?id={query}",
+  adhar:   "https://aadharinfo.suryahacker.workers.dev/?aadhar={query}",
+  upi:     "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={query}",
+  vehicle: "https://vehicle.suryahacker.workers.dev/fetch?query={query}",
+};
+
+// Runtime mein yahi use hoga (DB se override hoga)
+let apiUrls = { ...DEFAULT_API_URLS };
+
+// API response display config — kaunsa field user ko dikhana hai
+// "raw" = pura response dikhao (default formatters use karo)
+// "field:xyz" = response ka xyz field dikhao
+const DEFAULT_API_RESPONSE_CONFIG = {
+  num:     "raw",
+  deep:    "raw",
+  tg:      "raw",
+  adhar:   "raw",
+  upi:     "raw",
+  vehicle: "raw",
+};
+let apiResponseConfig = { ...DEFAULT_API_RESPONSE_CONFIG };
+
+// ── CHANNELS (dynamic, DB se load hoga) ───────
+let CHANNELS = [
+  { name: "🔥 RTF GAMING",  username: "RTFGAMING1",     id: null },
+  { name: "🎁 GIVEAWAY",    username: "RTFGAMINGHACK0", id: null },
+  { name: "🎁 BACKUP",      username: "USERX1NFO",      id: null },
+];
+
+const JOINED_STATUSES = new Set(["member","administrator","creator","restricted"]);
+
+let admins          = ["@rtfgamming"];
+const userState     = new Map();
+const customTgData  = new Map();
+const customNumData = new Map();
+
+// ══════════════════════════════════════════════
+//  COIN & REFERRAL SYSTEM
+// ══════════════════════════════════════════════
+const referralCooldown = new Map();
+
+async function getUserCoins(userId) {
+  if (!usersCol) return 0;
+  try {
+    const user = await usersCol.findOne({ user_id: userId });
+    return user?.coins || 0;
+  } catch { return 0; }
+}
+
+async function addUserCoins(userId, amount) {
+  if (!usersCol) return;
+  try {
+    await usersCol.updateOne(
+      { user_id: userId },
+      { $inc: { coins: amount } },
+      { upsert: true }
+    );
+  } catch (e) { console.error("[ADD COINS]", e.message); }
+}
+
+async function deductUserCoins(userId, amount) {
+  if (!usersCol) return false;
+  try {
+    const user = await usersCol.findOne({ user_id: userId });
+    if (!user || (user.coins || 0) < amount) return false;
+    await usersCol.updateOne(
+      { user_id: userId },
+      { $inc: { coins: -amount } }
+    );
+    return true;
+  } catch (e) { console.error("[DEDUCT COINS]", e.message); return false; }
+}
+
+function canRefer(userId) {
+  const now = Date.now();
+  const data = referralCooldown.get(userId);
+  if (!data) {
+    referralCooldown.set(userId, { count: 1, timestamp: now });
+    return true;
+  }
+  if (now - data.timestamp > 60000) {
+    referralCooldown.set(userId, { count: 1, timestamp: now });
+    return true;
+  }
+  if (data.count < 2) {
+    data.count++;
+    return true;
+  }
+  return false;
+}
+
+// ── REQUEST SYSTEM ──────────────────────────────
+async function createRequest(userId, type, query, coinsUsed) {
+  if (!dataCol) return null;
+  const req = {
+    user_id: userId,
+    type: type,
+    query: query,
+    status: 'pending',
+    coins_used: coinsUsed,
+    created_at: new Date().toISOString(),
+    result: null
+  };
+  try {
+    const result = await dataCol.insertOne({
+      key: `request_${Date.now()}_${userId}`,
+      value: req,
+      created_at: new Date().toISOString()
+    });
+    return { ...req, _id: result.insertedId };
+  } catch (e) {
+    console.error("[CREATE REQUEST]", e.message);
+    return null;
+  }
+}
+
+async function getPendingRequests() {
+  if (!dataCol) return [];
+  try {
+    const docs = await dataCol.find({ 
+      "value.status": "pending",
+      key: { $regex: /^request_/ }
+    }).toArray();
+    return docs.map(d => ({ ...d.value, _id: d._id }));
+  } catch (e) {
+    console.error("[GET PENDING REQUESTS]", e.message);
+    return [];
+  }
+}
+
+async function updateRequestStatus(requestId, status, result = null) {
+  if (!dataCol) return;
+  try {
+    await dataCol.updateOne(
+      { _id: requestId },
+      { $set: { "value.status": status, "value.result": result } }
+    );
+  } catch (e) {
+    console.error("[UPDATE REQUEST]", e.message);
+  }
+}
+
+async function getUserRequests(userId) {
+  if (!dataCol) return [];
+  try {
+    const docs = await dataCol.find({
+      "value.user_id": userId,
+      key: { $regex: /^request_/ }
+    }).sort({ created_at: -1 }).toArray();
+    return docs.map(d => ({ ...d.value, _id: d._id }));
+  } catch (e) {
+    console.error("[GET USER REQUESTS]", e.message);
+    return [];
+  }
+}
+
+// ══════════════════════════════════════════════
+//  API TOGGLE SYSTEM
+// ══════════════════════════════════════════════
+const apiToggle = {
+  num:     { enabled: true, label: "📞 Number API",    offMsg: "❌ Number lookup abhi available nahi hai." },
+  deep:    { enabled: true, label: "🔬 Deep Intel API", offMsg: "❌ Deep data lookup abhi available nahi hai." },
+  tg:      { enabled: true, label: "🔎 TG Lookup API",  offMsg: "❌ TG lookup abhi available nahi hai. Thodi der baad try karo." },
+  adhar:   { enabled: true, label: "🪪 Aadhaar API",    offMsg: "❌ Aadhaar lookup abhi available nahi hai." },
+  upi:     { enabled: true, label: "💳 UPI API",        offMsg: "❌ UPI lookup abhi available nahi hai." },
+  vehicle: { enabled: true, label: "🚗 Vehicle API",    offMsg: "❌ Vehicle lookup abhi available nahi hai." },
+};
+
+const API_KEYS = ["num","deep","tg","adhar","upi","vehicle"];
+const API_LABELS = {
+  num:     "📞 Number API",
+  deep:    "🔬 Deep Intel API",
+  tg:      "🔎 TG Lookup API",
+  adhar:   "🪪 Aadhaar API",
+  upi:     "💳 UPI API",
+  vehicle: "🚗 Vehicle API",
+};
+
+// ── CONCURRENCY CONTROL ───────────────────────
+const userQueue = new Map();
+function queueForUser(userId, taskFn) {
+  const prev = userQueue.get(userId) || Promise.resolve();
+  const next = prev.then(() => taskFn()).catch(e => console.error(`[QUEUE] uid=${userId}, ${e.message}`));
+  userQueue.set(userId, next);
+  next.finally(() => { if (userQueue.get(userId) === next) userQueue.delete(userId); });
+  return next;
+}
+
+// ── MongoDB ──────────────────────────────────
+let mongoClient, db, usersCol, dataCol;
+
+async function initDb() {
+  if (!MONGO_URI) { console.warn("[DB] MONGO_URI not set"); return; }
+  try {
+    mongoClient = new MongoClient(MONGO_URI, {
+      maxPoolSize: 100, minPoolSize: 10,
+      serverSelectionTimeoutMS: 8000, connectTimeoutMS: 8000, socketTimeoutMS: 30000,
+    });
+    await mongoClient.connect();
+    db       = mongoClient.db("rtfbot");
+    usersCol = db.collection("users");
+    dataCol  = db.collection("saved_data");
+    await usersCol.createIndex({ user_id: 1 }, { unique: true });
+    await dataCol.createIndex({ key: 1 });
+    console.log("[DB] MongoDB connected ✅");
+  } catch (e) { console.error("[DB ERROR]", e.message); mongoClient = null; }
+}
+
+// ── DB SAVE/LOAD ──────────────────────────────
+async function dbSaveChannels() {
+  if (!dataCol) return;
+  try {
+    await dataCol.updateOne({ key: "channels" }, { $set: { key: "channels", value: CHANNELS, updated_at: new Date().toISOString() } }, { upsert: true });
+  } catch (e) { console.error("[DB SAVE CHANNELS]", e.message); }
+}
+
+async function dbLoadChannels() {
+  if (!dataCol) return;
+  try {
+    const doc = await dataCol.findOne({ key: "channels" });
+    if (doc && Array.isArray(doc.value) && doc.value.length > 0) {
+      CHANNELS = doc.value;
+      console.log(`[DB] Loaded ${CHANNELS.length} channels ✅`);
+    }
+  } catch (e) { console.error("[DB LOAD CHANNELS]", e.message); }
+}
+
+async function dbSaveApiUrls() {
+  if (!dataCol) return;
+  try {
+    await dataCol.updateOne(
+      { key: "api_urls" },
+      { $set: { key: "api_urls", value: apiUrls, updated_at: new Date().toISOString() } },
+      { upsert: true }
+    );
+    await dataCol.updateOne(
+      { key: "api_response_config" },
+      { $set: { key: "api_response_config", value: apiResponseConfig, updated_at: new Date().toISOString() } },
+      { upsert: true }
+    );
+  } catch (e) { console.error("[DB SAVE API URLS]", e.message); }
+}
+
+async function dbLoadApiUrls() {
+  if (!dataCol) return;
+  try {
+    const doc = await dataCol.findOne({ key: "api_urls" });
+    if (doc && doc.value && typeof doc.value === "object") {
+      apiUrls = { ...DEFAULT_API_URLS, ...doc.value };
+      console.log("[DB] Loaded API URLs ✅");
+    }
+    const cfgDoc = await dataCol.findOne({ key: "api_response_config" });
+    if (cfgDoc && cfgDoc.value && typeof cfgDoc.value === "object") {
+      apiResponseConfig = { ...DEFAULT_API_RESPONSE_CONFIG, ...cfgDoc.value };
+      console.log("[DB] Loaded API response config ✅");
+    }
+  } catch (e) { console.error("[DB LOAD API URLS]", e.message); }
+}
+
+function dbSaveUser(from) {
+  if (!usersCol) return;
+  const now = new Date().toISOString();
+  usersCol.updateOne(
+    { user_id: from.id },
+    {
+      $set: { 
+        user_id: from.id, 
+        username: from.username || "", 
+        name: [from.first_name, from.last_name].filter(Boolean).join(" "), 
+        first_name: from.first_name || "", 
+        last_name: from.last_name || "", 
+        last_seen: now 
+      },
+      $setOnInsert: { first_seen: now, total_searches: 0, coins: 0 }
+    },
+    { upsert: true }
+  ).catch(e => console.error("[DB SAVE USER]", e.message));
+}
+
+function dbIncrSearch(userId) {
+  if (!usersCol) return;
+  usersCol.updateOne({ user_id: userId }, { $inc: { total_searches: 1 } })
+    .catch(e => console.error("[DB INCR SEARCH]", e.message));
+}
+
+async function dbSaveData(key, value) {
+  if (!dataCol) return;
+  dataCol.updateOne({ key }, { $set: { key, value, updated_at: new Date().toISOString() } }, { upsert: true })
+    .catch(e => console.error("[DB SAVE DATA]", e.message));
+}
+
+async function dbGetAllUsers() {
+  if (!usersCol) return [];
+  try { return await usersCol.find({}, { projection: { _id: 0 } }).toArray(); }
+  catch (e) { console.error("[DB GET USERS]", e.message); return []; }
+}
+
+async function dbUserCount() {
+  if (!usersCol) return 0;
+  try { return await usersCol.countDocuments(); } catch { return 0; }
+}
+
+// ── TELEGRAM API ─────────────────────────────
+const TG_BASE    = `https://api.telegram.org/bot${BOT_TOKEN}`;
+const httpAgent  = new http.Agent ({ keepAlive: true, maxSockets: 200 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 200 });
+function agentForTelegram(url) { return url.startsWith("https") ? { agent: httpsAgent } : { agent: httpAgent }; }
+
+const httpsAgentExternal = new https.Agent({ keepAlive: false, timeout: 60000 });
+const httpAgentExternal  = new http.Agent ({ keepAlive: false, timeout: 60000 });
+function agentForExternal(url) { return url.startsWith("https") ? { agent: httpsAgentExternal } : { agent: httpAgentExternal }; }
+
+async function tgApi(method, body = {}) {
+  try {
+    const res  = await fetch(`${TG_BASE}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000), ...agentForTelegram(TG_BASE) });
+    const json = await res.json();
+    if (!json.ok) { console.error(`[TG ${method}]`, json.description); return null; }
+    return json.result;
+  } catch (e) { console.error(`[TG ${method}]`, e.message); return null; }
+}
+
+async function tgApiGet(method, params = {}) {
+  try {
+    const url = new URL(`${TG_BASE}/${method}`);
+    Object.keys(params).forEach(k => url.searchParams.append(k, params[k]));
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000), ...agentForTelegram(TG_BASE) });
+    const json = await res.json();
+    if (!json.ok) { console.error(`[TG ${method}]`, json.description); return null; }
+    return json.result;
+  } catch (e) { console.error(`[TG ${method}]`, e.message); return null; }
+}
+
+function escMd(text) {
+  if (text == null) return "";
+  return String(text).replace(/[_*[\]()~>#+=|{}.!\\\-]/g, "\\$&");
+}
+function cbMd(label, value) {
+  const v = (value != null ? String(value).trim() : "");
+  if (v && !["N/A","","None","null","nan","undefined","Not Available"].includes(v))
+    return `${escMd(label)}: ${escMd(v)}`;
+  return `${escMd(label)}: ❌ N/A`;
+}
+
+function escHtml(text) {
+  if (text == null) return "";
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function htmlBold(text) { return `<b>${escHtml(text)}</b>`; }
+function htmlCode(text) { return `<code>${escHtml(text)}</code>`; }
+
+const sendMessage     = (chat_id, text, extra = {}) => tgApi("sendMessage",     { chat_id, text, parse_mode: "MarkdownV2", disable_web_page_preview: true, ...extra });
+const sendMessageHtml = (chat_id, text, extra = {}) => tgApi("sendMessage",     { chat_id, text, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
+const deleteMessage   = (chat_id, message_id) => tgApi("deleteMessage", { chat_id, message_id });
+const answerCallback  = (callback_query_id, text = "", show_alert = false) => tgApi("answerCallbackQuery", { callback_query_id, text, show_alert });
+const getChatMember   = (chat_id, user_id) => tgApi("getChatMember", { chat_id, user_id });
+const setMyCommands   = (commands) => tgApi("setMyCommands", { commands });
+const setWebhook      = (url)      => tgApi("setWebhook",    { url, drop_pending_updates: true });
+const sendPlain = (chat_id, text, extra = {}) => tgApi("sendMessage", { chat_id, text, disable_web_page_preview: true, ...extra });
+
+async function sendDataNotFound(chatId, userMsgId, notFoundText) {
+  const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
+  const notFoundMsg = await sendPlain(chatId, notFoundText, extra);
+  setTimeout(() => {
+    if (notFoundMsg) deleteMessage(chatId, notFoundMsg.message_id);
+    if (userMsgId)   deleteMessage(chatId, userMsgId);
+  }, 15000);
+}
+
+async function sendDataFound(chatId, userMsgId, text) {
+  const extra = userMsgId ? { reply_to_message_id: userMsgId } : {};
+  const res = await sendMessage(chatId, text, extra);
+  if (!res) {
+    const plain = text.replace(/[_*[\]()~>#+=|{}.!\\\-]/g, "");
+    await sendPlain(chatId, plain, extra);
+  }
+  return res;
+}
+
+// ── JOIN CHECK ────────────────────────────────
+const joinCache = new Map();
+const JOIN_CACHE_TTL = 60_000;
+
+function resolveChannelId(ch) {
+  if (ch.id) return ch.id;
+  if (ch.username) return `@${ch.username}`;
+  return null;
+}
+
+async function getNotJoinedChannels(userId) {
+  const missing = [];
+  for (const ch of CHANNELS) {
+    const cid = resolveChannelId(ch);
+    if (!cid) continue;
+    try {
+      const m = await getChatMember(cid, userId);
+      if (!m || !JOINED_STATUSES.has(m.status)) missing.push(ch);
+    } catch { missing.push(ch); }
+  }
+  return missing;
+}
+
+async function checkJoin(userId) {
+  const cached = joinCache.get(userId);
+  if (cached && Date.now() - cached.ts < JOIN_CACHE_TTL) return cached.ok;
+  const missing = await getNotJoinedChannels(userId);
+  const ok = missing.length === 0;
+  joinCache.set(userId, { ok, ts: Date.now() });
+  if (joinCache.size > 5000) { const c = Date.now() - JOIN_CACHE_TTL; for (const [k,v] of joinCache) { if (v.ts < c) joinCache.delete(k); } }
+  return ok;
+}
+
+function isAdmin(username) {
+  return admins.map(a => a.toLowerCase()).includes(`@${(username||"").toLowerCase()}`);
+}
+
+async function sendJoinPrompt(chatId) {
+  const missing = await getNotJoinedChannels(chatId);
+  if (!missing.length) return false;
+  const buttons = missing.map(ch => {
+    const url = ch.invite_link ? ch.invite_link : ch.username ? `https://t.me/${ch.username}` : null;
+    if (!url) return null;
+    return [{ text: `➕ ${ch.name}`, url }];
+  }).filter(Boolean);
+  buttons.push([{ text: "✅ VERIFY JOIN", callback_data: "verify" }]);
+  await sendPlain(chatId, "╔════════════════════════╗\n║  🔒  ACCESS LOCKED  🔒  ║\n╠════════════════════════╣\n📢  Sabhi channels JOIN karo\n⚡  Phir ✅ VERIFY dabao\n╚════════════════════════╝", { reply_markup: { inline_keyboard: buttons } });
+  return true;
+}
+
+// ── MENUS ─────────────────────────────────────
+const MAIN_MENU_TEXT =
+  "╔══════════════════════════╗\n║  ⚡️  R T F   B O T  ⚡️   ║\n╠══════════════════════════╣\n" +
+  "🛡  Status  : ONLINE\n👑  Owner   : @RTFGAMMING\n🔥  Version : v3.5\n" +
+  "╠══════════════════════════╣\n📌  Neeche se option chuno:\n╚══════════════════════════╝";
+
+const HELP_TEXT =
+  "╔══════════════════════════╗\n║  📖  B O T   H E L P    ║\n╠══════════════════════════╣\n" +
+  "📞  /num <number>\n   Example: /num 9876543210\n\n" +
+  "🔎  /tg <username ya userid>\n   Example: /tg rtfgamming\n   Example: /tg 8518042438\n\n" +
+  "🪪  /adhar <aadhaar_no>\n   Example: /adhar 598229659586\n\n" +
+  "💳  /upi <upi_id>\n   Example: /upi 70497398@axl\n\n" +
+  "🚗  /vehicle <reg_number>\n   Example: /vehicle MH02FZ0555\n\n" +
+  "💰  /coins - Check your coins\n" +
+  "🔗  /refer - Get referral link\n" +
+  "📝  /request <type> <query> - Request data using coins\n" +
+  "📋  /myrequests - Check your requests\n\n" +
+  "🏠 /start  ❓ /help\n╠══════════════════════════╣\n👑  Owner : @RTFGAMMING\n╚══════════════════════════╝";
+
+function mainMenuKb() {
+  return { inline_keyboard: [
+    [{ text: "📞 Number Lookup", callback_data: "menu_number" }, { text: "🔎 TG Lookup", callback_data: "menu_tg" }],
+    [{ text: "🪪 Aadhaar Lookup", callback_data: "menu_adhar" }],
+    [{ text: "💳 UPI Lookup", callback_data: "menu_upi" }],
+    [{ text: "🚗 Vehicle Lookup", callback_data: "menu_vehicle" }],
+    [{ text: "💰 Coins", callback_data: "menu_coins" }, { text: "🔗 Refer", callback_data: "menu_refer" }],
+    [{ text: "❓ Help", callback_data: "menu_help" }, { text: "👑 Owner", callback_data: "menu_owner" }],
+  ]};
+}
+
+function adminMenuKb() {
+  return { inline_keyboard: [
+    [{ text: "📞 Number Lookup", callback_data: "menu_number" }, { text: "🔎 TG Lookup", callback_data: "menu_tg" }],
+    [{ text: "🪪 Aadhaar Lookup", callback_data: "menu_adhar" }],
+    [{ text: "💳 UPI Lookup", callback_data: "menu_upi" }],
+    [{ text: "🚗 Vehicle Lookup", callback_data: "menu_vehicle" }],
+    [{ text: "💰 Coins", callback_data: "menu_coins" }, { text: "🔗 Refer", callback_data: "menu_refer" }],
+    [{ text: "❓ Help", callback_data: "menu_help" }, { text: "👑 Owner", callback_data: "menu_owner" }],
+    [{ text: "📢 Broadcast", callback_data: "menu_broadcast" }, { text: "👥 Users Count", callback_data: "menu_users" }],
+    [{ text: "📋 Admin List", callback_data: "menu_adminlist" }, { text: "⚙️ Admin Panel", callback_data: "menu_adminpanel" }],
+    [{ text: "✏️ Set Custom TG", callback_data: "menu_setcustomtg" }],
+    [{ text: "✏️ Set Custom Num", callback_data: "menu_setcustomnum" }],
+    [{ text: "🗄️ DB Backup", callback_data: "menu_dbbackup" }],
+    [{ text: "🔌 API Manager", callback_data: "menu_api" }],
+    [{ text: "🔗 API URL Manager", callback_data: "menu_apiurl" }],
+    [{ text: "📢 Channel Manager", callback_data: "menu_channels" }],
+    [{ text: "📝 Pending Requests", callback_data: "menu_pending_requests" }],
+  ]};
+}
+
+// ══════════════════════════════════════════════
+//  API URL MANAGER — TEXT + KEYBOARD (HTML VERSION)
+// ══════════════════════════════════════════════
+
+function apiUrlManagerTextHtml() {
+  let text = "🔗 <b>API URL MANAGER</b>\n";
+  text += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+  for (const k of API_KEYS) {
+    const url = apiUrls[k] || DEFAULT_API_URLS[k];
+    const isDefault = url === DEFAULT_API_URLS[k];
+    const cfg = apiResponseConfig[k] || "raw";
+    const cfgLabel = cfg === "raw" ? "🟢 Default Format" : `🔵 Custom Field: <code>${escHtml(cfg.replace("field:", ""))}</code>`;
+    text += `<b>${escHtml(API_LABELS[k])}</b>\n`;
+    text += `Status: ${isDefault ? "🟢 Default URL" : "🔵 Custom URL"}\n`;
+    text += `Response: ${cfgLabel}\n`;
+    const shortUrl = url.length > 50 ? url.slice(0, 50) + "..." : url;
+    text += `URL: <code>${escHtml(shortUrl)}</code>\n\n`;
+  }
+  text += "<i>✏️ = URL change  |  🔄 = Default reset</i>";
+  return text;
+}
+
+function apiUrlManagerKb() {
+  const rows = API_KEYS.map(k => [
+    { text: `✏️ ${API_LABELS[k]}`, callback_data: `apiurl_edit_${k}` },
+    { text: "🔄 Reset", callback_data: `apiurl_reset_${k}` },
+  ]);
+  rows.push([{ text: "🔙 Back", callback_data: "menu_adminpanel" }]);
+  return { inline_keyboard: rows };
+}
+
+// ══════════════════════════════════════════════
+//  CHANNEL MANAGER
+// ══════════════════════════════════════════════
+
+function channelManagerText() {
+  let text = "╔══════════════════════════╗\n║  📢  CHANNEL MANAGER     ║\n╠══════════════════════════╣\n\n";
+  if (!CHANNELS.length) {
+    text += "❌  Koi channel nahi hai abhi.\n\n";
+  } else {
+    CHANNELS.forEach((ch, i) => {
+      const type = ch.username ? "🌐 Public" : "🔒 Private";
+      const ref  = ch.username ? `@${ch.username}` : `ID: ${ch.id}`;
+      text += `${i + 1}\\. ${escMd(ch.name)}\n`;
+      text += `   ${type} \\| ${escMd(ref)}\n`;
+      if (ch.invite_link) text += `   🔗 Invite link set ✅\n`;
+      text += "\n";
+    });
+  }
+  text += "🗑️ = Remove  \\|  ➕ = Naya Add\n╚══════════════════════════╝";
+  return text;
+}
+
+function channelManagerKb() {
+  const rows = CHANNELS.map((ch, i) => {
+    const label = ch.username ? `@${ch.username}` : `ID:${ch.id}`;
+    return [{ text: `🗑️ Remove — ${ch.name} (${label})`, callback_data: `ch_del_${i}` }];
+  });
+  rows.push([{ text: "➕ Channel Add Karo", callback_data: "ch_add" }]);
+  rows.push([{ text: "🔙 Back", callback_data: "menu_adminpanel" }]);
+  return { inline_keyboard: rows };
+}
+
+// ── API MANAGER ───────────────────────────────
+function apiManagerKb() {
+  const rows = API_KEYS.map(k => {
+    const api = apiToggle[k];
+    const st  = api.enabled ? "🟢 ON" : "🔴 OFF";
+    return [
+      { text: `${st}  ${api.label}`, callback_data: `api_tog_${k}` },
+      { text: "✏️ Msg", callback_data: `api_msg_${k}` },
+    ];
+  });
+  rows.push([{ text: "🔙 Back", callback_data: "menu_adminpanel" }]);
+  return { inline_keyboard: rows };
+}
+
+function apiManagerText() {
+  let text = "╔══════════════════════════╗\n║  🔌  API MANAGER          ║\n╠══════════════════════════╣\n\n";
+  for (const k of API_KEYS) {
+    const api = apiToggle[k];
+    const st  = api.enabled ? "🟢 ON " : "🔴 OFF";
+    text += `${st}  ${api.label}\n`;
+    if (!api.enabled) text += `       💬 "${api.offMsg.slice(0,40)}..."\n`;
+    text += "\n";
+  }
+  text += "Toggle = ON/OFF  |  ✏️ = Custom off msg\n╚══════════════════════════╝";
+  return text;
+}
+
+// ══════════════════════════════════════════════
+//  FORMAT HELPERS
+// ══════════════════════════════════════════════
+
+function extractRecords(data) {
+  const records = [];
+  try {
+    const results = (data && typeof data === "object" && !Array.isArray(data)) ? (data.result || []) : (data || []);
+    for (const r of (Array.isArray(results) ? results : [])) {
+      records.push({
+        name:    (r.name    || "N/A").trim(),
+        fname:   (r.fname   || "N/A").trim(),
+        address: (r.address || "N/A").trim(),
+        circle:  (r.circle  || "N/A").trim(),
+        alt:     String(r.alt    || "N/A"),
+        aadhar:  String(r.aadhar || "N/A"),
+        email:   (r.email   || "N/A"),
+      });
+    }
+  } catch (e) { console.error("[extractRecords]", e.message); }
+  return records;
+}
+
+// ── FIXED formatNumResult ──
+function formatNumResult(records, number) {
+  const colors = ["🔴","🟠","🟡","🟢","🔵"];
+  let out =
+    `┌─────────────────────────┐\n│  📞  NUMBER INFO         │\n├─────────────────────────┤\n` +
+    `📱  Number  : ${escMd(number)}\n📊  Records : ${Math.min(records.length,5)} found\n\n`;
   records.slice(0,5).forEach((r,i) => {
     const dot = colors[i % colors.length];
     out +=
@@ -12,117 +631,120 @@
   return out;
 }
 
-// ══════════════════════════════════════════════
-//  NEW DEEP API FORMATTER
-// ══════════════════════════════════════════════
-
-function formatDeepResult(data, queryNumber) {
+// ── FIXED parseDeepApiResponse ──
+function parseDeepApiResponse(data) {
   try {
     if (!data || !data.status || !data.data) return null;
     
     const records = [];
-    const sources = data.data;
+    const sources = data.data || {};
     
-    // Extract records from all sources
-    for (const sourceKey of Object.keys(sources)) {
-      const source = sources[sourceKey];
-      if (source.records && Array.isArray(source.records)) {
-        for (const rec of source.records) {
-          const record = {
-            name: rec.FullName || rec.Name || "",
-            fname: rec.FatherName || "",
-            address: rec.Adres || rec.Adres2 || rec.Adres3 || "",
-            phone: rec.Phone || "",
-            phone2: rec.Phone2 || "",
-            phone3: rec.Phone3 || "",
-            phone4: rec.Phone4 || "",
-            phone5: rec.Phone5 || "",
-            phone6: rec.Phone6 || "",
-            documentNumber: rec.DocumentNumber || "",
-            region: rec.Region || "",
-            source: sourceKey,
-            sourceTitle: source.title || "",
-            lastActivity: rec.LastActivity || "",
-            registrationDate: rec.RegistrationDate || "",
-            dateOfBirth: rec.DateOfBirth || "",
-            education: rec.Education || "",
-            age: rec.Age || "",
-            gender: rec.Gender || "",
-          };
-          records.push(record);
+    // Process source1 records
+    if (sources.source1 && Array.isArray(sources.source1.records)) {
+      for (const item of sources.source1.records) {
+        // Collect all phone numbers
+        const phones = [];
+        for (let i = 1; i <= 10; i++) {
+          const phone = item[`Phone${i}`];
+          if (phone) phones.push(String(phone).trim());
         }
+        if (item.Phone) phones.push(String(item.Phone).trim());
+        
+        // Remove duplicates and filter
+        const uniquePhones = [...new Set(phones)].filter(p => p && p.length > 5);
+        
+        records.push({
+          name:    String(item.FullName || item.Name || "").trim(),
+          fname:   String(item.FatherName || "").trim(),
+          address: String(item.Adres || item.Adres2 || item.Adres3 || "").trim(),
+          circle:  String(item.Region || "").trim(),
+          alt:     uniquePhones.length > 0 ? uniquePhones.join(", ") : "N/A",
+          aadhar:  String(item.DocumentNumber || "").trim(),
+          email:   String(item.Email || "").trim(),
+          age:     String(item.Age || "").trim(),
+          gender:  String(item.Gender || "").trim(),
+          dob:     String(item.DateOfBirth || "").trim(),
+          education: String(item.Education || "").trim(),
+          lastActivity: String(item.LastActivity || "").trim(),
+          registrationDate: String(item.RegistrationDate || "").trim(),
+          source: "source1"
+        });
       }
     }
     
-    if (!records.length) return null;
-    
-    const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
-    let text = `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-               `│  🕵️  D E E P   I N T E L   │\n` +
-               `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
-               `🔢  Query : ${escMd(queryNumber)}\n\n`;
-    
-    // Group records by source
-    const sourceGroups = {};
-    records.forEach(rec => {
-      if (!sourceGroups[rec.source]) sourceGroups[rec.source] = [];
-      sourceGroups[rec.source].push(rec);
-    });
-    
-    let index = 0;
-    for (const sourceKey of Object.keys(sourceGroups)) {
-      const sourceRecords = sourceGroups[sourceKey];
-      const sourceTitle = sourceRecords[0]?.sourceTitle || sourceKey;
-      text += `📁━━━ ${escMd(sourceTitle)} ━━━📁\n`;
-      
-      sourceRecords.forEach((rec, i) => {
-        const dot = colors[index % colors.length];
-        text += `${dot}━━━ RECORD ${index + 1} ━━━${dot}\n`;
-        if (rec.name) text += `${cbMd("👤 Name      ", rec.name)}\n`;
-        if (rec.fname) text += `${cbMd("👨 Father    ", rec.fname)}\n`;
-        if (rec.phone) text += `${cbMd("📞 Phone     ", rec.phone)}\n`;
-        if (rec.phone2) text += `${cbMd("📞 Phone 2   ", rec.phone2)}\n`;
-        if (rec.phone3) text += `${cbMd("📞 Phone 3   ", rec.phone3)}\n`;
-        if (rec.phone4) text += `${cbMd("📞 Phone 4   ", rec.phone4)}\n`;
-        if (rec.phone5) text += `${cbMd("📞 Phone 5   ", rec.phone5)}\n`;
-        if (rec.phone6) text += `${cbMd("📞 Phone 6   ", rec.phone6)}\n`;
-        if (rec.address) text += `${cbMd("📍 Address   ", rec.address)}\n`;
-        if (rec.documentNumber) text += `${cbMd("🪪 Document  ", rec.documentNumber)}\n`;
-        if (rec.region) text += `${cbMd("📡 Region    ", rec.region)}\n`;
-        if (rec.lastActivity) text += `${cbMd("🕐 Last Act. ", rec.lastActivity)}\n`;
-        if (rec.registrationDate) text += `${cbMd("📅 Reg Date  ", rec.registrationDate)}\n`;
-        if (rec.dateOfBirth) text += `${cbMd("🎂 DOB       ", rec.dateOfBirth)}\n`;
-        if (rec.education) text += `${cbMd("🎓 Education ", rec.education)}\n`;
-        if (rec.age) text += `${cbMd("📊 Age       ", rec.age)}\n`;
-        if (rec.gender) text += `${cbMd("⚧️ Gender    ", rec.gender)}\n`;
-        text += "\n";
-        index++;
-      });
+    // Process source2 records
+    if (sources.source2 && Array.isArray(sources.source2.records)) {
+      for (const item of sources.source2.records) {
+        const phones = [];
+        if (item.Phone) phones.push(String(item.Phone).trim());
+        const uniquePhones = [...new Set(phones)].filter(p => p && p.length > 5);
+        
+        records.push({
+          name:    String(item.Name || "").trim(),
+          fname:   "N/A",
+          address: "N/A",
+          circle:  "N/A",
+          alt:     uniquePhones.length > 0 ? uniquePhones.join(", ") : "N/A",
+          aadhar:  "N/A",
+          email:   "N/A",
+          age:     String(item.Age || "").trim(),
+          gender:  String(item.Gender || "").trim(),
+          dob:     String(item.DateOfBirth || "").trim(),
+          education: String(item.Education || "").trim(),
+          lastActivity: String(item.LastActivity || "").trim(),
+          registrationDate: String(item.RegistrationDate || "").trim(),
+          source: "source2"
+        });
+      }
     }
     
-    text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
-    return text;
+    return records.length ? records : null;
   } catch (e) { 
-    console.error("[formatDeepResult]", e.message); 
+    console.error("[parseDeepApiResponse]", e.message); 
     return null; 
   }
 }
 
-// ══════════════════════════════════════════════
-//  NEW AADHAAR API FORMATTER
-// ══════════════════════════════════════════════
+// ── FIXED formatDeepResult ──
+function formatDeepResult(records, queryNumber) {
+  if (!records || !records.length) return null;
+  const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
+  let text =
+    `\n\n🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
+    `│  🕵️  D E E P   I N T E L   │\n` +
+    `🔬━━━━━━━━━━━━━━━━━━━━━🔬\n` +
+    `🔢  Query : ${escMd(queryNumber)}\n\n`;
+  
+  records.forEach((rec, i) => {
+    const dot = colors[i % colors.length];
+    text += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
+    if (rec.name)    text += `${cbMd("👤 Name   ", rec.name)}\n`;
+    if (rec.fname && rec.fname !== "N/A")   text += `${cbMd("👨 Father ", rec.fname)}\n`;
+    if (rec.alt && rec.alt !== "N/A")     text += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
+    if (rec.address && rec.address !== "N/A") text += `${cbMd("📍 Address", rec.address)}\n`;
+    if (rec.circle && rec.circle !== "N/A")  text += `${cbMd("📡 Circle ", rec.circle)}\n`;
+    if (rec.aadhar && rec.aadhar !== "N/A")  text += `${cbMd("🪪 Aadhar ", rec.aadhar)}\n`;
+    if (rec.age && rec.age !== "N/A")    text += `${cbMd("🎂 Age    ", rec.age)}\n`;
+    if (rec.gender && rec.gender !== "N/A") text += `${cbMd("⚧ Gender ", rec.gender)}\n`;
+    if (rec.dob && rec.dob !== "N/A")    text += `${cbMd("📅 DOB    ", rec.dob)}\n`;
+    if (rec.education && rec.education !== "N/A") text += `${cbMd("🎓 Education", rec.education)}\n`;
+    if (rec.lastActivity && rec.lastActivity !== "N/A") text += `${cbMd("🕐 Last Activity", rec.lastActivity)}\n`;
+    if (rec.registrationDate && rec.registrationDate !== "N/A") text += `${cbMd("📋 Registered", rec.registrationDate)}\n`;
+    text += "\n";
+  });
+  text += `👑  ${escMd(OWNER)}  \\|  ⚡ DEEP INTEL`;
+  return text;
+}
 
+// ── FIXED formatAdharResult ──
 function formatAdharResult(data, adharNumber) {
   try {
-    if (!data || typeof data !== "object") return null;
+    if (!data || !data[0]) return null;
     
-    // Extract developer/owner fields to skip
-    const skipFields = ["developer"];
+    // Skip developer field and get all records
     const records = [];
-    
-    // Iterate through all keys to find record objects
     for (const key of Object.keys(data)) {
-      if (skipFields.includes(key)) continue;
+      if (key === "developer" || key === "timestamp" || key === "owner" || key === "credit") continue;
       const item = data[key];
       if (item && typeof item === "object" && item.aadhar) {
         records.push(item);
@@ -131,33 +753,23 @@ function formatAdharResult(data, adharNumber) {
     
     if (!records.length) return null;
     
-    let out = `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
-              `🔢  Aadhaar : ${escMd(adharNumber)}\n\n`;
+    let out =
+      `┌─────────────────────────┐\n│  🪪  AADHAAR INTEL       │\n├─────────────────────────┤\n` +
+      `🔢  Aadhaar : ${escMd(adharNumber)}\n📊  Records : ${records.length} found\n\n`;
     
-    // Display first record as primary
-    const primary = records[0];
-    out += `📋━━━ PRIMARY INFO ━━━📋\n`;
-    if (primary.name) out += `${cbMd("👤 Name      ", primary.name)}\n`;
-    if (primary.fname) out += `${cbMd("👨 Father    ", primary.fname)}\n`;
-    if (primary.num) out += `${cbMd("📞 Phone     ", primary.num)}\n`;
-    if (primary.alt) out += `${cbMd("📞 Alt Phone ", primary.alt)}\n`;
-    if (primary.address) out += `${cbMd("📍 Address   ", primary.address)}\n`;
-    if (primary.circle) out += `${cbMd("📡 Circle    ", primary.circle)}\n`;
-    
-    // Show additional records if any
-    if (records.length > 1) {
-      out += `\n📋━━━ ADDITIONAL RECORDS (${records.length - 1}) ━━━📋\n`;
-      for (let i = 1; i < records.length && i < 5; i++) {
-        const rec = records[i];
-        out += `\n🔹━━━ RECORD ${i} ━━━🔹\n`;
-        if (rec.name) out += `${cbMd("👤 Name    ", rec.name)}\n`;
-        if (rec.fname) out += `${cbMd("👨 Father  ", rec.fname)}\n`;
-        if (rec.num) out += `${cbMd("📞 Phone   ", rec.num)}\n`;
-        if (rec.alt) out += `${cbMd("📞 Alt     ", rec.alt)}\n`;
-        if (rec.address) out += `${cbMd("📍 Address ", rec.address)}\n`;
-        if (rec.circle) out += `${cbMd("📡 Circle  ", rec.circle)}\n`;
-      }
-    }
+    const colors = ["🔴","🟠","🟡","🟢","🔵","🟣"];
+    records.forEach((rec, i) => {
+      const dot = colors[i % colors.length];
+      out += `${dot}━━━ RECORD ${i+1} ━━━${dot}\n`;
+      if (rec.name)    out += `${cbMd("👤 Name   ", rec.name)}\n`;
+      if (rec.fname)   out += `${cbMd("👨 Father ", rec.fname)}\n`;
+      if (rec.num)     out += `${cbMd("📞 Number ", rec.num)}\n`;
+      if (rec.alt)     out += `${cbMd("☎️  Alt Num", rec.alt)}\n`;
+      if (rec.address) out += `${cbMd("📍 Address", rec.address)}\n`;
+      if (rec.circle)  out += `${cbMd("📡 Circle ", rec.circle)}\n`;
+      if (rec.email && rec.email !== "null")   out += `${cbMd("✉️  Email  ", rec.email)}\n`;
+      out += "\n";
+    });
     
     out += `└─────────────────────────┘\n👑  ${escMd(OWNER)}  \\|  ⚡ ACTIVE`;
     return out;
@@ -165,32 +777,6 @@ function formatAdharResult(data, adharNumber) {
     console.error("[formatAdhar]", e.message); 
     return null; 
   }
-}
-
-// ══════════════════════════════════════════════
-//  OLD FORMATTERS (KEPT FOR COMPATIBILITY)
-// ══════════════════════════════════════════════
-
-function parseDeepApiResponse(data) {
-  try {
-    let arr = Array.isArray(data) ? data : (data && Array.isArray(data.result) ? data.result : null);
-    if (!arr || !arr.length) return null;
-    const records = [];
-    for (const item of arr) {
-      if (item.req_left !== undefined || item.developer !== undefined) continue;
-      if (!item.NAME && !item.MOBILE) continue;
-      records.push({
-        name:    String(item.NAME    || "").trim(),
-        fname:   String(item.fname   || "").trim(),
-        address: String(item.ADDRESS || "").trim(),
-        circle:  String(item.circle  || "").trim(),
-        mobile:  String(item.MOBILE  || "").trim(),
-        alt:     String(item.alt     || "").trim(),
-        id:      String(item.id      || "").trim(),
-      });
-    }
-    return records.length ? records : null;
-  } catch (e) { console.error("[parseDeepApiResponse]", e.message); return null; }
 }
 
 function formatUpiResult(data, upiId) {
@@ -279,11 +865,11 @@ function formatVehicleResult(data) {
   const lmDate     = v(vd.lmDate);
   const lines = ["┌────────────────────────────┐","│  🚗  VEHICLE INFO           │","└────────────────────────────┘","🔷━━━ REGISTRATION ━━━🔷"];
   if (regNo)   lines.push(`🚘  Reg No       : ${escMd(regNo)}`);
-  if (regAuth) lines.push(`🏛️  Reg Auth     : ${escMd(regAuth)}`);
+  if (regAuth) lines.push(`🏛️   Reg Auth     : ${escMd(regAuth)}`);
   if (regDate) lines.push(`📅  Reg Date     : ${escMd(regDate)}`);
-  if (rtoCode) lines.push(`🗂️  RTO Code     : ${escMd(rtoCode)}`);
+  if (rtoCode) lines.push(`🗂️   RTO Code     : ${escMd(rtoCode)}`);
   if (rtoName) lines.push(`🏢  RTO Name     : ${escMd(rtoName)}`);
-  if (stateName) lines.push(`🗺️  State        : ${escMd(stateName)}`);
+  if (stateName) lines.push(`🗺️   State        : ${escMd(stateName)}`);
   if ([owner, fatherName, mobile, address, pincode].some(Boolean)) {
     lines.push("\n🔶━━━ OWNER DETAILS ━━━🔶");
     if (owner)      lines.push(`👤  Owner        : ${escMd(owner)}`);
@@ -296,7 +882,7 @@ function formatVehicleResult(data) {
     lines.push("\n🟢━━━ VEHICLE SPECS ━━━🟢");
     if (mfr)      lines.push(`🏭  Manufacturer : ${escMd(mfr)}`);
     if (model)    lines.push(`🚗  Model        : ${escMd(model)}`);
-    if (variant)  lines.push(`⚙️  Variant      : ${escMd(variant)}`);
+    if (variant)  lines.push(`⚙️   Variant      : ${escMd(variant)}`);
     if (fuelType) lines.push(`⛽  Fuel Type    : ${escMd(fuelType)}`);
     if (vehClass) lines.push(`📋  Class        : ${escMd(vehClass)}`);
     if (vehType)  lines.push(`🔖  Type         : ${escMd(vehType)}`);
@@ -315,7 +901,7 @@ function formatVehicleResult(data) {
   if ([financer, insComp, insPolicy, insUpto, puccValid, puccNo].some(Boolean)) {
     lines.push("\n🟣━━━ FINANCE & INSURANCE ━━━🟣");
     if (financer)  lines.push(`💰  Financer     : ${escMd(financer)}`);
-    if (insComp)   lines.push(`🛡️  Insurance    : ${escMd(insComp)}`);
+    if (insComp)   lines.push(`🛡️   Insurance    : ${escMd(insComp)}`);
     if (insPolicy) lines.push(`📄  Policy No    : ${escMd(insPolicy)}`);
     if (insUpto)   lines.push(`📅  Ins Upto     : ${escMd(insUpto)}${insExpired ? " ❌ EXPIRED" : " ✅ VALID"}`);
     if (puccValid) lines.push(`🌿  PUCC Valid   : ${escMd(puccValid)}`);
@@ -328,12 +914,12 @@ function formatVehicleResult(data) {
     if (eDate)     lines.push(`📅  Entry Date   : ${escMd(eDate)}`);
     if (lmDate)    lines.push(`🔄  Last Modified: ${escMd(lmDate)}`);
   }
-  lines.push(`\n┌────────────────────────────┐\n│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │\n└────────────────────────────┘`);
+  lines.push(`\n┌────────────────────────────┐`, `│  👑 ${escMd(OWNER)}  \\|  ⚡ ACTIVE  │`, `└────────────────────────────┘`);
   return lines.join("\n");
 }
 
 // ══════════════════════════════════════════════
-//  CUSTOM RESPONSE FORMATTER (FIXED — handles objects)
+//  CUSTOM RESPONSE FORMATTER
 // ══════════════════════════════════════════════
 function applyResponseConfig(key, rawData, query) {
   const cfg = apiResponseConfig[key] || "raw";
@@ -349,7 +935,6 @@ function applyResponseConfig(key, rawData, query) {
         else { cur = null; break; }
       }
       if (cur != null) {
-        // If extracted value is an object or array, stringify it prettily
         if (typeof cur === "object") {
           value = JSON.stringify(cur, null, 2);
         } else {
@@ -362,7 +947,6 @@ function applyResponseConfig(key, rawData, query) {
     if (!value || ["null","undefined","None","N/A",""].includes(value)) {
       return null;
     }
-    // If it's JSON, show in code block
     const isJson = value.startsWith("{") || value.startsWith("[");
     let resultText;
     if (isJson) {
@@ -390,7 +974,7 @@ async function sendDbBackup(chatId) {
     const total    = allUsers.length;
     if (!total) { await tgApi("editMessageText", { chat_id: chatId, message_id: statusMsg.message_id, text: "📭  Database empty hai." }); return; }
     const now    = new Date().toISOString().slice(0,16).replace("T"," ");
-    const sorted = [...allUsers].sort((a,b) => (b.total_searches||0) - (a.total_searches||0));
+    const sorted = [...allUsers].sort((a,b) => (b.total_searches || 0) - (a.total_searches || 0));
     const totalSearches = allUsers.reduce((s,u) => s + (u.total_searches||0), 0);
     const lines = [
       "╔════════════════════════════════╗",
@@ -401,11 +985,11 @@ async function sendDbBackup(chatId) {
       `🕐  Generated      : ${now} UTC`,
       "╠════════════════════════════════╣",
     ];
-    if (sorted[0]) lines.push(`🏆  Top Searcher: ${sorted[0].name||sorted[0].username||sorted[0].user_id} — ${sorted[0].total_searches||0} searches`);
+    if (sorted[0]) lines.push(`🏆  Top Searcher: ${sorted[0].name || sorted[0].username || sorted[0].user_id} — ${sorted[0].total_searches||0} searches`);
     lines.push("────────────────────────────────");
     sorted.forEach((u, i) => {
-      lines.push(`${i+1}. ${u.name||"no name"} | ${u.username ? "@"+u.username : "no username"} | ID: ${u.user_id||"N/A"} | 🔍 ${u.total_searches||0}`);
-      lines.push(`   📅 First: ${(u.first_seen||"").slice(0,10)||"N/A"}  |  Last: ${(u.last_seen||"").slice(0,10)||"N/A"}`);
+      lines.push(`${i+1}. ${u.name || "no name"} | ${u.username ? "@"+u.username : "no username"} | ID: ${u.user_id || "N/A"} | 🔍 ${u.total_searches||0} | 🪙 ${u.coins||0}`);
+      lines.push(`   📅 First: ${(u.first_seen || "").slice(0,10) || "N/A"}  |  Last: ${(u.last_seen || "").slice(0,10) || "N/A"}`);
     });
     lines.push("╚════════════════════════════════╝");
     const fullText = lines.join("\n");
@@ -460,12 +1044,10 @@ async function fetchNumApi(cleanPhone) {
   } catch (e) { console.error("[NUM API]", e.message); return []; }
 }
 
-// ── UPDATED DEEP API FETCH ────────────────────
+// ── UPDATED fetchDeepApi with 91 handling ──
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
-  // Clean number: remove spaces, +, and ensure 91 prefix
-  let clean = String(number).replace(/[+\s]/g, "");
-  // If number starts with 91, keep it; otherwise add 91
+  let clean = String(number).replace(/[+\s]/g, "").replace(/^\+91/, "");
   if (!clean.startsWith("91")) {
     clean = "91" + clean;
   }
@@ -517,7 +1099,8 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
     ]);
     deleteMessage(chatId, statusMsg.message_id);
 
-    const deepFmt = formatDeepResult(deepApiRaw, clean);
+    const deepRecords = parseDeepApiResponse(deepApiRaw);
+    const deepFmt     = formatDeepResult(deepRecords, clean);
 
     if (!records.length && !deepFmt) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n📱  Number: ${clean}\n⚠️  Koi record nahi mila`);
@@ -538,9 +1121,6 @@ async function handleNumber(chatId, number, userMsgId = null, userId = null) {
   }
 }
 
-// ══════════════════════════════════════════════
-//  UPDATED TG HANDLER — automatically detects "result" object
-// ══════════════════════════════════════════════
 async function handleTg(chatId, term, userMsgId = null, userId = null) {
   const rawInput = term.trim();
   term = rawInput.replace(/^@/, "");
@@ -575,13 +1155,13 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
     let tgId = null, phone = null, country = null, countryCode = null;
     if (rawData && rawData.result && typeof rawData.result === "object") {
       const res = rawData.result;
-      tgId = String(res.tg_id || "").trim();
-      phone = String(res.number || "").trim();
+      tgId = String(res.tg_id || res.id || "").trim();
+      phone = String(res.number || res.phone || "").trim();
       country = String(res.country || "").trim();
       countryCode = String(res.country_code || "").trim();
     } else {
       tgId = String(rawData.id || rawData.tg_id || "").trim();
-      phone = String(rawData.phone || rawData.number || "").trim();
+      phone = String(rawData.number || rawData.phone || "").trim();
       country = String(rawData.country || "").trim();
       countryCode = String(rawData.country_code || "").trim();
     }
@@ -620,8 +1200,9 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
         if (numRes.length && apiToggle.num.enabled) {
           tgBlock += "\n" + formatNumResult(numRes, cleanPhone);
         }
-        const deepFmt = formatDeepResult(deepApiRaw, cleanPhone);
-        if (deepFmt) tgBlock += deepFmt;
+        const deepRecords = parseDeepApiResponse(deepApiRaw);
+        const df = formatDeepResult(deepRecords, cleanPhone);
+        if (df) tgBlock += df;
       }
     }
     await sendDataFound(chatId, userMsgId, tgBlock);
@@ -632,6 +1213,7 @@ async function handleTg(chatId, term, userMsgId = null, userId = null) {
   }
 }
 
+// ── UPDATED handleAdhar ──
 async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
   if (!apiToggle.adhar.enabled) {
     await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ⚠️  API OFFLINE   ║\n╚══════════════════╝\n${apiToggle.adhar.offMsg}`);
@@ -649,12 +1231,12 @@ async function handleAdhar(chatId, adharRaw, userMsgId = null, userId = null) {
       return;
     }
 
-    // Use new formatter
-    const formatted = formatAdharResult(data, adharRaw);
-    if (!formatted) {
+    if (!data || !data[0]) {
       await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ DATA NOT FOUND  ║\n╚══════════════════╝\n🪪  Aadhaar: ${adharRaw}`);
       return;
     }
+    const formatted = formatAdharResult(data, adharRaw);
+    if (!formatted) { await sendDataNotFound(chatId, userMsgId, `❌  Data format error — Aadhaar: ${adharRaw}`); return; }
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, formatted);
   } catch (e) {
@@ -678,7 +1260,7 @@ async function handleUpi(chatId, upiId, userMsgId = null, userId = null) {
       return;
     }
 
-    if (!data.success) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: ${upiId}`); return; }
+    if (!data || !data.success) { await sendDataNotFound(chatId, userMsgId, `╔══════════════════╗\n║  ❌ UPI NOT FOUND   ║\n╚══════════════════╝\n💳  UPI: ${upiId}`); return; }
     if (userId) dbIncrSearch(userId);
     await sendDataFound(chatId, userMsgId, formatUpiResult(data, upiId));
   } catch (e) { console.error("[UPI]", e.message); deleteMessage(chatId, statusMsg.message_id); await sendPlain(chatId, "❌  API Error / Timeout."); }
@@ -709,66 +1291,147 @@ async function handleVehicle(chatId, vehicleNo, userMsgId = null, userId = null)
 }
 
 // ══════════════════════════════════════════════
-//  BROADCAST SYSTEM — SUPPORTS ALL MEDIA TYPES
+//  COIN & REFERRAL HANDLERS
 // ══════════════════════════════════════════════
 
-async function handleBroadcast(chatId, from, msg, choice) {
-  const users = await dbGetAllUsers();
-  const uids = users.map(u => u.user_id);
+async function handleCoins(chatId, userId) {
+  const coins = await getUserCoins(userId);
+  await sendPlain(chatId,
+    `╔══════════════════════════╗\n║  💰  YOUR COINS          ║\n╠══════════════════════════╣\n` +
+    `🪙  Total Coins : ${coins}\n\n` +
+    `📝  Use /request <type> <query> to request data\n` +
+    `   Types: num, tg, adhar, upi, vehicle\n` +
+    `   Cost: 5 coins per request\n\n` +
+    `🔗  Use /refer to get your referral link\n` +
+    `   Each referral = 1 coin\n` +
+    `   (Max 2 referrals per minute)\n` +
+    `╚══════════════════════════╝`
+  );
+}
+
+async function handleRefer(chatId, from) {
+  const userId = from.id;
+  const botUsername = (await tgApiGet("getMe"))?.username || "RTF_Bot";
+  const link = `https://t.me/${botUsername}?start=ref_${userId}`;
+  const coins = await getUserCoins(userId);
   
-  if (!uids.length) {
-    await sendPlain(chatId, "❌  Koi user nahi hai database mein.");
+  await sendPlain(chatId,
+    `╔══════════════════════════╗\n║  🔗  REFERRAL SYSTEM      ║\n╠══════════════════════════╣\n` +
+    `📤  Apna referral link share karo:\n\n${link}\n\n` +
+    `🪙  Current Coins : ${coins}\n` +
+    `✅  Per referral = 1 coin\n` +
+    `⚡  Limit: 2 referrals per minute\n\n` +
+    `📌  Naye user ko start karna hai bot se\n` +
+    `╚══════════════════════════╝`
+  );
+}
+
+async function handleReferralStart(userId, referrerId) {
+  if (userId === referrerId) return;
+  if (!canRefer(referrerId)) {
+    console.log(`[REFERRAL] ${referrerId} rate limited`);
     return;
   }
+  await addUserCoins(referrerId, 1);
+  const user = await tgApiGet("getChat", { chat_id: userId });
+  const name = user?.first_name || "Someone";
+  await sendPlain(referrerId, `🎉  ${name} ne aapka referral use kiya!\n🪙  +1 coin mil gaya!`);
+}
 
-  const statusMsg = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
-
-  let ok = 0, fail = 0;
-
-  // Check if it's a media message
-  const hasMedia = msg.photo || msg.video || msg.document || msg.audio || msg.animation || msg.sticker || msg.voice || msg.video_note;
-
-  if (hasMedia) {
-    // Forward the media message
-    for (const uid of uids) {
-      try {
-        // Forward the original message with all media and caption
-        const forwarded = await tgApi("forwardMessage", {
-          chat_id: uid,
-          from_chat_id: chatId,
-          message_id: msg.message_id
-        });
-        if (forwarded) ok++; else fail++;
-      } catch (e) {
-        fail++;
-        console.error(`[BROADCAST] Failed for ${uid}:`, e.message);
-      }
-      await new Promise(r => setTimeout(r, 100));
-    }
-  } else {
-    // Text message broadcast
-    const text = msg.text || "";
-    if (!text) {
-      await sendPlain(chatId, "❌  Kuch toh bhejo! (text ya media)");
-      return;
-    }
-    for (const uid of uids) {
-      try {
-        const res = await tgApi("sendMessage", { chat_id: uid, text });
-        if (res) ok++; else fail++;
-      } catch (e) {
-        fail++;
-        console.error(`[BROADCAST] Failed for ${uid}:`, e.message);
-      }
-      await new Promise(r => setTimeout(r, 100));
+async function handleRequest(chatId, text, from, userMsgId = null) {
+  const parts = text.trim().split(/\s+/, 3);
+  if (parts.length < 3) {
+    await sendPlain(chatId, 
+      `❌  Usage: /request <type> <query>\n\n` +
+      `Types: num, tg, adhar, upi, vehicle\n` +
+      `Example: /request num 9876543210\n` +
+      `Example: /request tg rtfgamming\n\n` +
+      `Cost: 5 coins per request`
+    );
+    return;
+  }
+  
+  const type = parts[1].toLowerCase();
+  const query = parts.slice(2).join(" ");
+  const validTypes = ["num", "tg", "adhar", "upi", "vehicle"];
+  if (!validTypes.includes(type)) {
+    await sendPlain(chatId, `❌  Invalid type! Valid: ${validTypes.join(", ")}`);
+    return;
+  }
+  
+  const coins = await getUserCoins(from.id);
+  if (coins < 5) {
+    await sendPlain(chatId,
+      `╔══════════════════════════╗\n║  ❌  INSUFFICIENT COINS   ║\n╠══════════════════════════╣\n` +
+      `🪙  Required: 5 coins\n🪙  You have: ${coins} coins\n\n` +
+      `🔗  Use /refer to earn more coins!\n` +
+      `╚══════════════════════════╝`
+    );
+    return;
+  }
+  
+  if (!await deductUserCoins(from.id, 5)) {
+    await sendPlain(chatId, "❌  Coin deduction failed. Try again.");
+    return;
+  }
+  
+  const request = await createRequest(from.id, type, query, 5);
+  if (!request) {
+    await addUserCoins(from.id, 5);
+    await sendPlain(chatId, "❌  Request create nahi ho paya. Coins return kar diye.");
+    return;
+  }
+  
+  await sendPlain(chatId,
+    `╔══════════════════════════╗\n║  ✅  REQUEST SENT         ║\n╠══════════════════════════╣\n` +
+    `📝  Type  : ${type}\n🔍  Query : ${query}\n🪙  Cost  : 5 coins\n` +
+    `📊  Status: PENDING\n\n` +
+    `⏳  Admin approve karega\n📋  /myrequests se check karo\n` +
+    `╚══════════════════════════╝`
+  );
+  
+  const adminMsg = 
+    `╔══════════════════════════╗\n║  📝  NEW REQUEST          ║\n╠══════════════════════════╣\n` +
+    `👤  User  : ${from.first_name || "Unknown"} (@${from.username || "no username"})\n` +
+    `🆔  ID    : ${from.id}\n` +
+    `📝  Type  : ${type}\n🔍  Query : ${query}\n🪙  Coins : 5\n` +
+    `📊  Status: PENDING\n` +
+    `╠══════════════════════════╣\n` +
+    `/approve ${request._id.toString()} - Approve\n` +
+    `/reject ${request._id.toString()} - Reject\n` +
+    `╚══════════════════════════╝`;
+  
+  for (const admin of admins) {
+    const adminUsername = admin.replace("@", "");
+    const adminChat = await tgApiGet("getChat", { chat_id: admin });
+    if (adminChat) {
+      await sendPlain(adminChat.id, adminMsg);
+    } else {
+      await sendPlain(`@${adminUsername}`, adminMsg);
     }
   }
+}
 
-  await tgApi("editMessageText", {
-    chat_id: chatId,
-    message_id: statusMsg.message_id,
-    text: `╔══════════════════════╗\n║  📢 BROADCAST DONE    ║\n╚══════════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}`
+async function handleMyRequests(chatId, userId) {
+  const requests = await getUserRequests(userId);
+  if (!requests.length) {
+    await sendPlain(chatId, "📋  Aapki koi request nahi hai.");
+    return;
+  }
+  
+  let text = `╔══════════════════════════╗\n║  📋  YOUR REQUESTS       ║\n╠══════════════════════════╣\n\n`;
+  requests.forEach((req, i) => {
+    const statusEmoji = req.status === 'pending' ? '⏳' : req.status === 'approved' ? '✅' : '❌';
+    text += `${i+1}. ${statusEmoji} ${req.type} - ${req.query}\n`;
+    text += `   Status: ${req.status.toUpperCase()}\n`;
+    text += `   Date: ${(req.created_at || "").slice(0,10)}\n`;
+    if (req.status === 'approved' && req.result) {
+      text += `   📄 Result: ${req.result.slice(0, 50)}${req.result.length > 50 ? "..." : ""}\n`;
+    }
+    text += "\n";
   });
+  text += `╚══════════════════════════╝`;
+  await sendPlain(chatId, text);
 }
 
 // ══════════════════════════════════════════════
@@ -832,7 +1495,7 @@ async function handleChannelAddFlow(chatId, from, text, choice) {
 }
 
 // ══════════════════════════════════════════════
-//  CALLBACKS — COMPLETE FIX
+//  CALLBACKS
 // ══════════════════════════════════════════════
 async function handleCallback(cb) {
   const from     = cb.from;
@@ -841,7 +1504,6 @@ async function handleCallback(cb) {
   const data     = cb.data;
   const _isAdmin = isAdmin(from.username);
 
-  // ── VERIFY JOIN ──
   if (data === "verify") {
     joinCache.delete(from.id);
     const missing = await getNotJoinedChannels(from.id);
@@ -863,7 +1525,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── API TOGGLE (admin only) ──
   if (data.startsWith("api_tog_") && _isAdmin) {
     const key = data.replace("api_tog_", "");
     if (apiToggle[key]) {
@@ -875,7 +1536,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── API OFF MESSAGE SET (admin only) ──
   if (data.startsWith("api_msg_") && _isAdmin) {
     const key = data.replace("api_msg_", "");
     if (apiToggle[key]) {
@@ -886,7 +1546,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── API URL MANAGER — MAIN PANEL (HTML) ──
   if (data === "menu_apiurl" && _isAdmin) {
     await answerCallback(cb.id);
     const text = apiUrlManagerTextHtml();
@@ -905,7 +1564,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── API URL EDIT BUTTON — Step 1: Ask for new URL ──
   if (data.startsWith("apiurl_edit_") && _isAdmin) {
     const key = data.replace("apiurl_edit_", "");
     if (DEFAULT_API_URLS[key] !== undefined) {
@@ -922,14 +1580,13 @@ async function handleCallback(cb) {
         `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
         `📥 STEP 1: Naya URL bhejo\n` +
         `⚠️  URL mein {query} hona ZAROORI hai\n` +
-        `   Example: https://api.example.com/search?q={query}&key=abc\n\n` +
+        `    Example: https://api.example.com/search?q={query}&key=abc\n\n` +
         `Ya "cancel" type karo:\n╚══════════════════════════╝`
       );
     }
     return;
   }
 
-  // ── API URL RESET ──
   if (data.startsWith("apiurl_reset_") && _isAdmin) {
     const key = data.replace("apiurl_reset_", "");
     if (DEFAULT_API_URLS[key]) {
@@ -954,7 +1611,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── CHANNEL MANAGER ──
   if (data === "menu_channels" && _isAdmin) {
     await answerCallback(cb.id);
     await tgApi("editMessageText", {
@@ -968,7 +1624,7 @@ async function handleCallback(cb) {
   if (data === "ch_add" && _isAdmin) {
     await answerCallback(cb.id);
     userState.set(from.id, "ch_add_step1");
-    await sendPlain(chatId, `╔══════════════════════════╗\n║  ➕  CHANNEL ADD          ║\n╠══════════════════════════╣\n📥  Channel username ya ID bhejo:\n\n🌐 Public  : RTFGAMMING1 ya @RTFGAMMING1\n🔒 Private : -1001234567890\n\n⚠️  Bot ko pehle channel admin\n   banana zaroori hai!\n╚══════════════════════════╝`);
+    await sendPlain(chatId, `╔══════════════════════════╗\n║  ➕  CHANNEL ADD          ║\n╠══════════════════════════╣\n📥  Channel username ya ID bhejo:\n\n🌐 Public  : RTFGAMING1 ya @RTFGAMING1\n🔒 Private : -1001234567890\n\n⚠️  Bot ko pehle channel admin\n   banana zaroori hai!\n╚══════════════════════════╝`);
     return;
   }
 
@@ -991,40 +1647,61 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ── BROADCAST CALLBACK ──
-  if (data === "menu_broadcast" && _isAdmin) {
-    await answerCallback(cb.id);
-    userState.set(from.id, "broadcast");
-    await sendPlain(chatId, "📢  Broadcast message type karo:\n\n📎  Text, Photo, Video, File, GIF, APK — sab forward ho jayega!");
-    return;
-  }
-
-  // ── CHECK JOIN FOR NON-ADMIN ──
   await answerCallback(cb.id);
   if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
-  // ── USER MENU PROMPTS ──
   const prompts = {
     menu_number:  "╔════════════════════╗\n║  📞 NUMBER LOOKUP  ║\n╚════════════════════╝\n📥  Number bhejo:\n📌 Format: 9876543210",
     menu_tg:      "╔═══════════════════════╗\n║   🔎  TG LOOKUP       ║\n╠═══════════════════════╣\n📥  Username YA numeric ID\n✅  rtfgamming / @rtfgamming / 8518042438\n╚═══════════════════════╝",
     menu_adhar:   "╔══════════════════════╗\n║  🪪  AADHAAR LOOKUP  ║\n╚══════════════════════╝\n📥  Aadhaar number bhejo:\n📌 Example: 598229659586",
     menu_upi:     "╔══════════════════════╗\n║  💳  UPI LOOKUP      ║\n╚══════════════════════╝\n📥  UPI ID bhejo:\n📌 Example: 70497398@axl",
     menu_vehicle: "╔══════════════════════╗\n║  🚗  VEHICLE LOOKUP  ║\n╚══════════════════════╝\n📥  Vehicle number bhejo:\n📌 Example: MH02FZ0555",
+    menu_coins:   "💰  /coins se check karo",
+    menu_refer:   "🔗  /refer se referral link lo",
   };
-  const stateMap = { menu_number:"number", menu_tg:"tg", menu_adhar:"adhar", menu_upi:"upi", menu_vehicle:"vehicle" };
+  const stateMap = { menu_number:"number", menu_tg:"tg", menu_adhar:"adhar", menu_upi:"upi", menu_vehicle:"vehicle", menu_coins:"coins", menu_refer:"refer" };
 
-  if (stateMap[data]) { userState.set(from.id, stateMap[data]); await sendPlain(chatId, prompts[data]); return; }
+  if (stateMap[data]) { 
+    userState.set(from.id, stateMap[data]); 
+    if (stateMap[data] === "coins") {
+      await handleCoins(chatId, from.id);
+    } else if (stateMap[data] === "refer") {
+      await handleRefer(chatId, from);
+    } else {
+      await sendPlain(chatId, prompts[data]); 
+    }
+    return; 
+  }
   if (data === "menu_help")  { await sendPlain(chatId, HELP_TEXT); return; }
   if (data === "menu_owner") { await sendPlain(chatId, "╔══════════════════╗\n║  👑  OWNER INFO   ║\n╚══════════════════╝\n🔗 https://t.me/RTFGAMMING"); return; }
 
   if (!_isAdmin) return;
 
-  // ── ADMIN-ONLY MENU ACTIONS ──
   if (data === "menu_users")      { const c = await dbUserCount(); await sendPlain(chatId, `📊 Total Users: ${c}\n🗄️ Source: MongoDB`); return; }
   if (data === "menu_dbbackup")   { await sendDbBackup(chatId); return; }
   if (data === "menu_adminlist")  { await sendPlain(chatId, "╔══════════════════╗\n║  📋 ADMIN LIST   ║\n╚══════════════════╝\n" + admins.map(a=>`• ${a}`).join("\n")); return; }
+  if (data === "menu_broadcast")  { userState.set(from.id, "broadcast"); await sendPlain(chatId, "📢  Broadcast message type karo:"); return; }
   if (data === "menu_setcustomtg")  { userState.set(from.id, "setcustomtg_step1");  await sendPlain(chatId, "📥  Username bhejo jiska data set karna hai\n📌  Example: rtfgamming"); return; }
   if (data === "menu_setcustomnum") { userState.set(from.id, "setcustomnum_step1"); await sendPlain(chatId, "📥  Number bhejo jiska data set karna hai\n📌  Example: 9876543210"); return; }
+
+  if (data === "menu_pending_requests") {
+    const requests = await getPendingRequests();
+    if (!requests.length) {
+      await sendPlain(chatId, "📋  Koi pending request nahi hai.");
+      return;
+    }
+    let text = `╔══════════════════════════╗\n║  📝  PENDING REQUESTS    ║\n╠══════════════════════════╣\n\n`;
+    requests.forEach((req, i) => {
+      text += `${i+1}. ${req.type} - ${req.query}\n`;
+      text += `   👤 User: ${req.user_id}\n`;
+      text += `   🪙 Coins: ${req.coins_used}\n`;
+      text += `   📅 ${(req.created_at || "").slice(0,10)}\n`;
+      text += `   /approve_${req._id.toString().slice(0,8)} /reject_${req._id.toString().slice(0,8)}\n\n`;
+    });
+    text += `╚══════════════════════════╝`;
+    await sendPlain(chatId, text);
+    return;
+  }
 
   if (data === "menu_api") {
     await tgApi("editMessageText", {
@@ -1040,7 +1717,8 @@ async function handleCallback(cb) {
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
       "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
       "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n📋 /listcustom  🔌 /apimanager\n" +
-      "🔗 /apiurlmanager  📢 /channelmanager\n╚══════════════════════════╝"
+      "🔗 /apiurlmanager  📢 /channelmanager\n📝 /pending  - Check pending requests\n" +
+      "╚══════════════════════════╝"
     );
     return;
   }
@@ -1060,29 +1738,20 @@ async function handleUpdate(update) {
     const _isAdmin = isAdmin(from.username);
 
     dbSaveUser(from);
-    
-    // Check if user is in broadcast state
-    const choice = userState.get(from.id);
-    if (choice === "broadcast" && _isAdmin) {
-      await handleBroadcast(chatId, from, msg, choice);
-      userState.delete(from.id);
-      return;
-    }
-
     if (!text) return;
 
     if (_isAdmin && ["/broadcast","/addadmin","/removeadmin","/users","/listadmins","/admin",
         "/setcustomtg","/delcustomtg","/setcustomnum","/delcustomnum","/listcustom","/dbbackup",
-        "/apimanager","/apiurlmanager","/channelmanager"]
+        "/apimanager","/apiurlmanager","/channelmanager","/pending","/approve_","/reject_"]
         .some(c => text.toLowerCase().startsWith(c))) {
       return await handleAdminText(chatId, from.id, text);
     }
 
+    const choice = userState.get(from.id);
     if (!choice) return;
 
     if (!_isAdmin && !(await checkJoin(from.id))) { await sendJoinPrompt(chatId); return; }
 
-    // ── API OFF MESSAGE SET ──
     if (typeof choice === "string" && choice.startsWith("api_offmsg::") && _isAdmin) {
       const key = choice.split("::")[1];
       userState.delete(from.id);
@@ -1094,11 +1763,6 @@ async function handleUpdate(update) {
       return;
     }
 
-    // ══════════════════════════════════════════════
-    //  API URL SET FLOW — 2 STEPS
-    // ══════════════════════════════════════════════
-
-    // STEP 1 — Receive new URL
     if (typeof choice === "string" && choice.startsWith("apiurl_set_url::") && _isAdmin) {
       const key = choice.split("::")[1];
       if (text.toLowerCase() === "cancel") {
@@ -1110,7 +1774,7 @@ async function handleUpdate(update) {
         await sendPlain(chatId,
           `❌  URL mein {query} nahi hai!\n\nExample: https://api.example.com/search?q={query}&key=abc\n\nDobara URL bhejo ya "cancel" karo:`
         );
-        return; // keep state, let them try again
+        return;
       }
       if (!DEFAULT_API_URLS[key]) {
         userState.delete(from.id);
@@ -1127,13 +1791,12 @@ async function handleUpdate(update) {
         `📥 STEP 2: Response format set karo\n\n` +
         `🟢 "raw"     — Default format (auto-detect)\n` +
         `🔵 field name — Sirf ek specific field dikhao\n` +
-        `   Example: "number" ya "result.number"\n\n` +
+        `    Example: "number" ya "result.number"\n\n` +
         `"raw" type karo ya field name bhejo:\n╚══════════════════════════╝`
       );
       return;
     }
 
-    // STEP 2 — Receive response field config
     if (typeof choice === "string" && choice.startsWith("apiurl_set_resp::") && _isAdmin) {
       const key = choice.split("::")[1];
       userState.delete(from.id);
@@ -1152,12 +1815,11 @@ async function handleUpdate(update) {
         `URL      : ${apiUrls[key].slice(0, 55)}${apiUrls[key].length > 55 ? "..." : ""}\n` +
         `Response : ${cfgLabel}\n` +
         `╠══════════════════════════╣\n` +
-        `✅ Done\\. Ab /apiurlmanager se check karo.\n╚══════════════════════════╝`
+        `✅ Done. Ab /apiurlmanager se check karo.\n╚══════════════════════════╝`
       );
       return;
     }
 
-    // ── CHANNEL ADD FLOW ──
     if (_isAdmin && (
       choice === "ch_add_step1" ||
       (typeof choice === "string" && choice.startsWith("ch_add_step2::")) ||
@@ -1167,11 +1829,51 @@ async function handleUpdate(update) {
       return;
     }
 
-    if (choice === "number")  { await handleNumber(chatId, text, msgId, from.id); }
+    if (choice === "broadcast" && _isAdmin) {
+      const users = await dbGetAllUsers();
+      const uids  = users.map(u => u.user_id);
+      const status = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
+      let ok = 0, fail = 0;
+      
+      const media = msg.photo || msg.video || msg.document || msg.audio || msg.animation || msg.sticker || msg.voice || msg.video_note;
+      if (media) {
+        for (const uid of uids) {
+          try {
+            const result = await tgApi("forwardMessage", {
+              chat_id: uid,
+              from_chat_id: chatId,
+              message_id: msgId
+            });
+            if (result) ok++; else fail++;
+          } catch (e) {
+            fail++;
+          }
+          await new Promise(r => setTimeout(r, 100));
+        }
+      } else if (text) {
+        for (const uid of uids) { 
+          const r = await tgApi("sendMessage", { chat_id: uid, text }); 
+          r ? ok++ : fail++; 
+          await new Promise(r => setTimeout(r, 50)); 
+        }
+      } else {
+        await sendPlain(chatId, "❌  Broadcast k liye message ya media bhejo.");
+        return;
+      }
+      
+      await tgApi("editMessageText", { 
+        chat_id: chatId, 
+        message_id: status.message_id,
+        text: `╔══════════════════╗\n║  📢 BROADCAST DONE  ║\n╚══════════════════╝\n✅  Delivered : ${ok}\n❌  Failed    : ${fail}\n👥  Total     : ${uids.length}` 
+      });
+    }
+    else if (choice === "number")  { await handleNumber(chatId, text, msgId, from.id); }
     else if (choice === "tg")      { await handleTg(chatId, text, msgId, from.id); }
     else if (choice === "adhar")   { await handleAdhar(chatId, text, msgId, from.id); }
     else if (choice === "upi")     { await handleUpi(chatId, text, msgId, from.id); }
     else if (choice === "vehicle") { await handleVehicle(chatId, text, msgId, from.id); }
+    else if (choice === "coins")   { await handleCoins(chatId, from.id); }
+    else if (choice === "refer")   { await handleRefer(chatId, from); }
     else if (choice === "setcustomtg_step1" && _isAdmin) {
       userState.set(from.id, `setcustomtg_step2::${text.trim().replace(/^@/,"").toLowerCase()}`);
       await sendPlain(chatId, `✅  Username: ${text.trim()}\n\n📥  Ab custom data bhejo:`);
@@ -1204,8 +1906,102 @@ async function handleAdminText(chatId, userId, text) {
       "╔══════════════════════════╗\n║  ⚙️  ADMIN PANEL          ║\n╠══════════════════════════╣\n" +
       "📢 /broadcast  👥 /users\n➕ /addadmin  ➖ /removeadmin\n📋 /listadmins  🗄️ /dbbackup\n" +
       "✏️ /setcustomtg  🗑️ /delcustomtg\n✏️ /setcustomnum  🗑️ /delcustomnum\n" +
-      "📋 /listcustom  🔌 /apimanager\n🔗 /apiurlmanager  📢 /channelmanager\n╚══════════════════════════╝"
+      "📋 /listcustom  🔌 /apimanager\n🔗 /apiurlmanager  📢 /channelmanager\n📝 /pending  - Pending requests\n" +
+      "╚══════════════════════════╝"
     );
+    return;
+  }
+
+  if (lower.startsWith("/approve_") || lower.startsWith("/reject_")) {
+    const isApprove = lower.startsWith("/approve_");
+    const idStr = lower.replace(isApprove ? "/approve_" : "/reject_", "").trim();
+    try {
+      const requestId = idStr;
+      const requests = await getPendingRequests();
+      const req = requests.find(r => r._id.toString() === requestId || r._id.toString().startsWith(requestId));
+      if (!req) {
+        await sendPlain(chatId, "❌  Request nahi mili.");
+        return;
+      }
+      
+      if (isApprove) {
+        await updateRequestStatus(req._id, 'approved');
+        await sendPlain(chatId, `✅  Request approved!`);
+        
+        let result = "Data fetch failed.";
+        try {
+          if (req.type === 'num') {
+            const records = await fetchNumApi(req.query);
+            if (records.length) result = formatNumResult(records, req.query);
+          } else if (req.type === 'tg') {
+            const data = await fetchTgApi(req.query);
+            if (data) result = `TG ID: ${data.tgId}\nPhone: ${data.phone}`;
+          } else if (req.type === 'adhar') {
+            const data = await apiFetch(buildUrl("adhar", req.query));
+            if (data) result = formatAdharResult(data, req.query) || "Data found but format error";
+          } else if (req.type === 'upi') {
+            const data = await apiFetch(buildUrl("upi", req.query));
+            if (data) result = formatUpiResult(data, req.query);
+          } else if (req.type === 'vehicle') {
+            const data = await apiFetch(buildUrl("vehicle", req.query));
+            if (data) result = formatVehicleResult(data);
+          }
+        } catch (e) {
+          result = `Error: ${e.message}`;
+        }
+        
+        await updateRequestStatus(req._id, 'approved', result);
+        
+        if (result && result !== "Data fetch failed.") {
+          await sendPlain(req.user_id, 
+            `╔══════════════════════════╗\n║  ✅  REQUEST APPROVED     ║\n╠══════════════════════════╣\n` +
+            `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
+            `📄  Result:\n${result}\n` +
+            `╚══════════════════════════╝`
+          );
+        } else {
+          await sendPlain(req.user_id, 
+            `╔══════════════════════════╗\n║  ❌  REQUEST FAILED       ║\n╠══════════════════════════╣\n` +
+            `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
+            `⚠️  Data fetch failed. Coins return kar diye.\n` +
+            `╚══════════════════════════╝`
+          );
+          await addUserCoins(req.user_id, 5);
+        }
+      } else {
+        await updateRequestStatus(req._id, 'rejected');
+        await addUserCoins(req.user_id, req.coins_used || 5);
+        await sendPlain(chatId, `❌  Request rejected. Coins returned to user.`);
+        await sendPlain(req.user_id,
+          `╔══════════════════════════╗\n║  ❌  REQUEST REJECTED     ║\n╠══════════════════════════╣\n` +
+          `📝  Type  : ${req.type}\n🔍  Query : ${req.query}\n\n` +
+          `🪙  ${req.coins_used || 5} coins wapas aa gaye.\n` +
+          `╚══════════════════════════╝`
+        );
+      }
+    } catch (e) {
+      console.error("[APPROVE/REJECT]", e.message);
+      await sendPlain(chatId, `❌  Error: ${e.message}`);
+    }
+    return;
+  }
+
+  if (lower === "/pending") {
+    const requests = await getPendingRequests();
+    if (!requests.length) {
+      await sendPlain(chatId, "📋  Koi pending request nahi hai.");
+      return;
+    }
+    let text = `╔══════════════════════════╗\n║  📝  PENDING REQUESTS    ║\n╠══════════════════════════╣\n\n`;
+    requests.forEach((req, i) => {
+      text += `${i+1}. ${req.type} - ${req.query}\n`;
+      text += `   👤 User: ${req.user_id}\n`;
+      text += `   🪙 Coins: ${req.coins_used}\n`;
+      text += `   📅 ${(req.created_at || "").slice(0,10)}\n`;
+      text += `   /approve_${req._id.toString().slice(0,8)} /reject_${req._id.toString().slice(0,8)}\n\n`;
+    });
+    text += `╚══════════════════════════╝`;
+    await sendPlain(chatId, text);
     return;
   }
 
@@ -1236,15 +2032,11 @@ async function handleAdminText(chatId, userId, text) {
 
   if (lower.startsWith("/broadcast")) {
     const msgText = text.slice("/broadcast".length).trim();
-    if (!msgText) { await sendPlain(chatId, "❌  Usage: /broadcast <message>\nYa bot se directly media forward karo."); return; }
+    if (!msgText) { await sendPlain(chatId, "❌  Usage: /broadcast <message>"); return; }
     const users = await dbGetAllUsers(); const uids = users.map(u => u.user_id);
     const status = await sendPlain(chatId, `📤  Broadcasting to ${uids.length} users...`);
     let ok = 0, fail = 0;
-    for (const uid of uids) {
-      const r = await tgApi("sendMessage", { chat_id: uid, text: msgText });
-      r ? ok++ : fail++;
-      await new Promise(r => setTimeout(r, 100));
-    }
+    for (const uid of uids) { const r = await tgApi("sendMessage", { chat_id: uid, text: msgText }); r ? ok++ : fail++; await new Promise(r => setTimeout(r, 50)); }
     await tgApi("editMessageText", { chat_id: chatId, message_id: status.message_id, text: `✅ Delivered: ${ok}\n❌ Failed: ${fail}\n👥 Total: ${uids.length}` });
     return;
   }
@@ -1334,8 +2126,25 @@ async function handleCommand(msg) {
   if (!match) return;
   const [, cmd, args = ""] = match;
 
-  if      (cmd === "start")   { await tgApi("sendMessage", { chat_id: chatId, text: MAIN_MENU_TEXT, reply_markup: _isAdm ? adminMenuKb() : mainMenuKb() }); }
+  if (cmd === "start" && args.startsWith("ref_")) {
+    const referrerId = parseInt(args.replace("ref_", ""));
+    if (!isNaN(referrerId)) {
+      await handleReferralStart(from.id, referrerId);
+    }
+  }
+
+  if (cmd === "start") { 
+    await tgApi("sendMessage", { 
+      chat_id: chatId, 
+      text: MAIN_MENU_TEXT, 
+      reply_markup: _isAdm ? adminMenuKb() : mainMenuKb() 
+    }); 
+  }
   else if (cmd === "help")    { await sendPlain(chatId, HELP_TEXT); }
+  else if (cmd === "coins")   { await handleCoins(chatId, from.id); }
+  else if (cmd === "refer")   { await handleRefer(chatId, from); }
+  else if (cmd === "request") { await handleRequest(chatId, text, from, msgId); }
+  else if (cmd === "myrequests") { await handleMyRequests(chatId, from.id); }
   else if (cmd === "num")     { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /num <number>"); return; } await handleNumber(chatId, args.trim(), msgId, from.id); }
   else if (cmd === "tg")      { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /tg <username ya userid>"); return; } await handleTg(chatId, args.trim(), msgId, from.id); }
   else if (cmd === "adhar")   { if (!args.trim()) { await sendPlain(chatId, "❌  Usage: /adhar <aadhaar_number>"); return; } await handleAdhar(chatId, args.trim(), msgId, from.id); }
@@ -1355,15 +2164,7 @@ app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
   const uid  = msg.from.id;
   const text = (msg.text || "").trim();
   if (text.startsWith("/")) { queueForUser(uid, () => handleCommand(msg)); }
-  else {
-    // Check if user is waiting for broadcast input
-    const choice = userState.get(uid);
-    if (choice === "broadcast" && isAdmin(msg.from.username)) {
-      queueForUser(uid, () => handleUpdate(update));
-    } else {
-      queueForUser(uid, () => handleUpdate(update));
-    }
-  }
+  else                      { queueForUser(uid, () => handleUpdate(update)); }
 });
 
 app.get("/", (_req, res) => res.send("RTF Bot is running ✅"));
@@ -1381,6 +2182,10 @@ async function start() {
     { command: "upi",            description: "💳 UPI ID Lookup" },
     { command: "vehicle",        description: "🚗 Vehicle Lookup" },
     { command: "help",           description: "❓ Help Guide" },
+    { command: "coins",          description: "💰 Check Your Coins" },
+    { command: "refer",          description: "🔗 Get Referral Link" },
+    { command: "request",        description: "📝 Request Data Using Coins" },
+    { command: "myrequests",     description: "📋 Check Your Requests" },
     { command: "apiurlmanager",  description: "🔗 API URL Manager (Admin)" },
     { command: "channelmanager", description: "📢 Channel Manager (Admin)" },
   ]);
