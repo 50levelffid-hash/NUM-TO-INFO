@@ -410,8 +410,10 @@ async function tgApiGet(method, params = {}) {
 
 function escMd(text) {
   if (text == null) return "";
+  // Escape all special MarkdownV2 characters
   return String(text).replace(/[_*[\]()~>#+=|{}.!\\\-]/g, "\\$&");
 }
+
 function cbMd(label, value) {
   const v = (value != null ? String(value).trim() : "");
   if (v && !["N/A","","None","null","nan","undefined","Not Available"].includes(v))
@@ -700,10 +702,7 @@ function formatNumResult(records, number) {
   return out;
 }
 
-// ══════════════════════════════════════════════
-//  FIXED DEEP API PARSER - Based on your response
-// ══════════════════════════════════════════════
-
+// ── FIXED DEEP API PARSER ──
 function parseDeepApiResponse(data) {
   console.log("[DEEP PARSER] 📥 Parsing deep API response...");
   
@@ -1230,17 +1229,19 @@ async function fetchNumApi(cleanPhone) {
 
 async function fetchDeepApi(number) {
   if (!apiToggle.deep.enabled) return null;
-  // Clean number: remove +, spaces, then add 91 if not present
+  
+  // Sirf spaces aur + hatao, 91 MAT JODO (API URL mein already 91 nahi hai)
   let clean = String(number).replace(/[+\s]/g, "");
-  if (!clean.startsWith("91")) {
-    clean = "91" + clean;
-  }
+  
   console.log(`[DEEP API] 🔍 Querying for: ${clean}`);
   try {
     const data = await apiFetch(buildUrl("deep", clean), 30000);
     console.log(`[DEEP API] 📥 Raw response:`, JSON.stringify(data, null, 2));
     return data || null;
-  } catch (e) { console.error("[DEEP API] ❌ Error:", e.message); return null; }
+  } catch (e) { 
+    console.error("[DEEP API] ❌ Error:", e.message); 
+    return null; 
+  }
 }
 
 async function fetchTgApi(term) {
