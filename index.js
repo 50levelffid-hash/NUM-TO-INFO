@@ -24,7 +24,7 @@ const AUTO_DELETE_KEY = "auto_delete_time";
 // ── API URLs ──────────────────────────────────
 const DEFAULT_API_URLS = {
   num:     "https://movements-invoice-amanda-victoria.trycloudflare.com/search/number?number={query}&key=mysecretkey123",
-  deep:    "https://leakapi.suryajasoos.workers.dev/?query=91{query}",
+  deep:    "https://leakapi.suryajasoos.workers.dev/?query={query}",
   tg:      "https://api.onaiword.com/api?id={query}",
   adhar:   "https://aadharinfo.suryahacker.workers.dev/?aadhar={query}",
   upi:     "https://krish-osintoy.lovable.app/api/v1/upi?key=rtf-7e9m8w62cmqyrbgyfq4tnpln&upi={query}",
